@@ -55,6 +55,56 @@ pip install -e .
 
 ---
 
+## ☁️ Run On Modal
+
+This repo now includes [`modal_app.py`](modal_app.py), which builds a CUDA-capable image, installs the pinned `third_party/sglang` dependency, mounts a persistent Hugging Face cache volume, and runs the benchmark remotely on Modal.
+
+Important: [`setup.py`](setup.py) only compiles kernels for `sm_89` and `sm_90`, so you should use `L40S`, `H100`, or `H200` class GPUs on Modal. `A10`, `L4`, and `A100` are not good defaults for this repo as-is.
+
+1. Make sure the local checkout has the SGLang submodule metadata available:
+
+```bash
+git submodule update --init --recursive
+```
+
+2. Make sure Modal is installed and authenticated locally:
+
+```bash
+python3 -m ensurepip --upgrade
+python3 -m pip install --user modal
+python3 -m modal setup
+python3 -m modal token info
+python3 -m modal profile current
+```
+
+3. Run a remote smoke test on a compatible GPU:
+
+```bash
+VORTEX_MODAL_GPU=L40S python3 -m modal run modal_app.py
+```
+
+4. Run the verification benchmark remotely:
+
+```bash
+VORTEX_MODAL_GPU=L40S python3 -m modal run modal_app.py \
+  --command verify \
+  --vortex-module-name gqa_block_sparse_attention \
+  --model-name Qwen/Qwen3-1.7B \
+  --trials 2 \
+  --topk-val 30 \
+  --mem 0.8
+```
+
+5. Switch to Hopper if you want a faster card:
+
+```bash
+VORTEX_MODAL_GPU=H100 python3 -m modal run modal_app.py --command verify
+```
+
+If the model weights are already downloaded once, later runs will reuse the Modal volume named `vortex-hf-cache`.
+
+---
+
 ## 🤖 AI-Generated Sparse Attention
 
 Vortex is designed not only for hand-crafted sparsity patterns but also for AI-generated sparse attention.
@@ -145,5 +195,4 @@ If `vortex_module_path` is not provided, Vortex will automatically search in `vo
 ## 📘 API Reference
 
 👉 https://infini-ai-lab.github.io/vortex_torch/
-
 

@@ -8,8 +8,10 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "torch>=2.7",
-        "lighteval[math]==0.12.2"
     ],
+    extras_require={
+        "bench": ["lighteval[math]==0.12.2"],
+    },
     ext_modules=[
         CUDAExtension(
             name='vortex_torch_C',
@@ -31,7 +33,6 @@ setup(
     ],
     cmdclass={'build_ext': BuildExtension},
 )
-
 
 
 

@@ -1,51 +1,61 @@
 import sglang as sgl
 import vortex_torch
-from transformers import AutoTokenizer, AutoConfig
-from lighteval.metrics.dynamic_metrics import (
-    ExprExtractionConfig,
-    LatexExtractionConfig,
-    MultilingualExtractiveMatchMetric
-)
-from lighteval.tasks.requests import Doc
-from lighteval.utils.language import Language
-from lighteval.models.model_output import ModelResponse
-from datasets import load_dataset, Dataset, concatenate_datasets
+import vortex_torch.flow as vortex_flow
+from transformers import AutoConfig
 import argparse
+import asyncio
 import json
+import re
 
-MATH_QUERY_TEMPLATE = """
-Solve the following math problem efficiently and clearly.  The last line of your response should be of the following format: 'Therefore, the final answer is: $\\boxed{{ANSWER}}$. I hope it is correct' (without quotes) where ANSWER is just the final number or expression that solves the problem. Think step by step before answering.
+vortex_torch.flow = vortex_flow
 
-{Question}
-""".strip()
+BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
+FINAL_ANSWER_RE = re.compile(
+    r"final answer is:\s*(.+)$",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 
-def generate_requests(dataset: Dataset, field_name: str, data_format: str, trial: int = 1, rank: int = 0, world_size: int = 1):
-    requests = []
 
-    # Step 1: Expand dataset trial times
-    if trial > 1:
-        dataset = Dataset.from_dict(dataset.to_dict().copy())  # ensure copy
-        datasets = [dataset] * trial
-        dataset = concatenate_datasets(datasets)
-    
-    total = len(dataset)
-    
-    # Step 2: Partition across ranks
-    per_proc = total // world_size
-    remainder = total % world_size
-    start = rank * per_proc + min(rank, remainder)
-    end = start + per_proc + (1 if rank < remainder else 0)
-    subset = dataset.select(list(range(start, end)))
+def _normalize_answer(text: str) -> str:
+    text = text.strip()
+    text = text.replace("$", "")
+    text = text.replace("\\,", "")
+    text = text.replace(" ", "")
+    text = text.lower()
+    if text.endswith("."):
+        text = text[:-1]
+    return text
 
-    # Step 3: Format requests
-    for data in subset:
-        conversations = [
-            {"role": "user", "content": data_format.format(Question=data[field_name])}
-        ]
-        data["conversations"] = conversations
-        requests.append(data)
 
-    return requests
+def _extract_answer(text: str) -> str:
+    boxed_matches = BOXED_RE.findall(text)
+    if boxed_matches:
+        return boxed_matches[-1]
+
+    final_answer_matches = FINAL_ANSWER_RE.findall(text)
+    if final_answer_matches:
+        return final_answer_matches[-1].strip()
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else text
+
+
+def _score_prediction(prediction: str, gold: str) -> float:
+    pred = _normalize_answer(_extract_answer(prediction))
+    target = _normalize_answer(gold)
+    return 1.0 if pred == target else 0.0
+
+
+def _ensure_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("event loop is closed")
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 
 def verify_algos(
 trials: int = 2,
@@ -56,6 +66,7 @@ model_name: str = "Qwen/Qwen3-1.7B",
 sparse_attention: bool = True,
 mem: float = 0.8
 ):  
+    _ensure_event_loop()
 
     llm = sgl.Engine(model_path=model_name, 
                     disable_cuda_graph=False,
@@ -71,6 +82,7 @@ mem: float = 0.8
                     vortex_max_seq_lens=12288,
                     mem_fraction_static=mem
                     )
+    _ensure_event_loop()
     
     with open("examples/amc23.jsonl", "r", encoding="utf-8") as f:
         requests = [json.loads(line) for line in f]
@@ -80,25 +92,13 @@ mem: float = 0.8
 
     sampling_params = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_new_tokens": 8192}
     
+    _ensure_event_loop()
     o = llm.generate(prompts, sampling_params)
-    gold_metric =  MultilingualExtractiveMatchMetric(
-            language=Language.ENGLISH,
-            fallback_mode="first_match",
-            precision=5,
-            gold_extraction_target=(ExprExtractionConfig(),),
-            pred_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig(boxed_match_priority=0)),
-            aggregation_function=max,
-        )
-    
     results = []
     for data, item in zip(requests, o):
         golds = [data["answer"]]
-        target = Doc(query=data["question"],choices=golds, gold_index=0)
         predictions = item["text"]
-        try:
-            result = gold_metric.compute(model_response=ModelResponse(text=[predictions]), doc=target)
-        except:
-            result = 0.0
+        result = _score_prediction(predictions, golds[0])
         
         results.append(
             {
