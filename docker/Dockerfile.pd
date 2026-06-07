@@ -1,13 +1,13 @@
 # vortex_torch + sglang v0.5.9, with PD (prefill/decode) disaggregation.
 #
-# Builds the v0.5 branch (vendored sglang lives at
+# Builds the v0.6 branch (vendored sglang lives at
 # third_party/sglang/v0.5.9/sglang) and adds the RDMA/InfiniBand userspace
 # stack + the Mooncake transfer engine that sglang's disaggregation backend
 # needs to move KV cache between prefill and decode workers.
 #
 # Build:
 #   DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.pd \
-#     --build-arg VORTEX_TORCH_REF=v0.5 \
+#     --build-arg VORTEX_TORCH_REF=v0.6 \
 #     --build-arg TORCH_CUDA_ARCH_LIST="9.0" \
 #     -t vortex-torch:pd-0.5.9 .
 #   # Blackwell (B200/sm100): pass TORCH_CUDA_ARCH_LIST="10.0".
@@ -64,7 +64,7 @@ ENV PATH="/opt/venv/bin:${PATH}"
 ENV VIRTUAL_ENV="/opt/venv"
 RUN python -m pip install --upgrade pip setuptools wheel
 
-ARG VORTEX_TORCH_REF=v0.5
+ARG VORTEX_TORCH_REF=v0.6
 ARG MOONCAKE_VERSION=0.3.9
 
 WORKDIR /workspace

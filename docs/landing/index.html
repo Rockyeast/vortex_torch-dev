@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vortex — Programmable Sparse Attention for Agents as Algorithm Designers</title>
+  <meta name="description" content="Vortex turns sparse-attention algorithm design into something AI agents can do: a Python-embedded frontend over a page-centric tensor abstraction, with a serving-integrated backend. AI agents generate, benchmark, and refine sparse-attention algorithms — the best reaching up to 3.46× higher throughput than full attention while preserving accuracy." />
+  <meta property="og:title" content="Vortex: Programmable Sparse Attention for Agents as Algorithm Designers" />
+  <meta property="og:description" content="A platform for autonomous algorithm discovery — AI agents design, deploy, and benchmark sparse attention end-to-end." />
+  <meta property="og:image" content="assets/fig1_results.png" />
+  <link rel="icon" href="assets/vortex_mark.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #fff7fa;
+      --bg-soft: #ffeef5;
+      --card: #ffffff;
+      --border: #ffd7e6;
+      --border-soft: #ffe6ef;
+      --fg: #2c1822;
+      --muted: #8f6c7b;
+      --accent: #e84393;
+      --accent-2: #b06ab3;
+      --accent-deep: #c2185b;
+      --shadow: 0 18px 50px -20px rgba(200, 24, 91, .35);
+      --shadow-soft: 0 10px 30px -16px rgba(176, 106, 179, .35);
+      --serif: "Fraunces", Georgia, "Times New Roman", serif;
+      --maxw: 1040px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; overflow-x: hidden; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background:
+        radial-gradient(1000px 520px at 85% -8%, #ffe0ee 0%, rgba(255,224,238,0) 60%),
+        radial-gradient(900px 480px at 10% 4%, #f4e6ff 0%, rgba(244,230,255,0) 55%),
+        var(--bg);
+      color: var(--fg);
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.65;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent-deep); }
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+    /* ---------- nav ---------- */
+    nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: saturate(180%) blur(14px);
+      background: rgba(255, 247, 250, .78);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-inner { max-width: var(--maxw); margin: 0 auto; padding: 12px 24px; display: flex; align-items: center; gap: 18px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.02em; font-size: 1.12rem; text-decoration: none; color: var(--fg); }
+    .brand img { width: 28px; height: 28px; }
+    .brand .grad { background: linear-gradient(100deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .nav-links { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .nav-links a { text-decoration: none; color: var(--muted); font-weight: 600; font-size: .92rem; padding: 7px 12px; border-radius: 9px; transition: color .15s, background .15s; }
+    .nav-links a:hover { color: var(--accent-deep); background: var(--bg-soft); }
+    .nav-links a.cta { color: #fff; background: linear-gradient(120deg, var(--accent), var(--accent-2)); box-shadow: var(--shadow-soft); }
+    .nav-links a.cta:hover { color: #fff; filter: brightness(1.05); }
+    @media (max-width: 720px) { .nav-links .hide-sm { display: none; } }
+
+    /* ---------- hero ---------- */
+    header.hero { text-align: center; padding: 76px 0 26px; }
+    .hero .mark { width: min(120px, 32%); height: auto; margin: 0 auto 18px; display: block; filter: drop-shadow(0 14px 30px rgba(232,67,147,.30)); }
+    .eyebrow { display: inline-block; font-weight: 700; font-size: .82rem; letter-spacing: .14em; text-transform: uppercase; color: var(--accent-deep); background: var(--bg-soft); border: 1px solid var(--border); padding: 6px 14px; border-radius: 999px; }
+    h1.title { font-family: var(--serif); font-size: clamp(3rem, 7vw, 5rem); line-height: 1.02; letter-spacing: -.03em; margin: 18px 0 8px; font-weight: 900; }
+    h1.title .grad { background: linear-gradient(110deg, var(--accent-deep), var(--accent) 45%, var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .subtitle { font-family: var(--serif); font-style: italic; font-size: clamp(0.66rem, 2.7vw, 1.5rem); font-weight: 500; color: var(--fg); margin: 8px auto 0; max-width: none; letter-spacing: -.01em; white-space: nowrap; }
+    .tagline { color: var(--muted); font-size: 1.06rem; margin: 16px auto 0; max-width: 680px; }
+    .tagline strong { color: var(--accent-deep); }
+
+    .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin: 30px 0 0; }
+    .btn { display: inline-flex; align-items: center; gap: 9px; text-decoration: none; padding: 13px 22px; border-radius: 13px; font-weight: 700; font-size: 1rem; border: 1px solid var(--border); color: var(--fg); background: var(--card); box-shadow: var(--shadow-soft); transition: transform .14s ease, box-shadow .14s ease, border-color .14s; }
+    .btn:hover { transform: translateY(-2px); border-color: var(--accent); }
+    .btn.primary { background: linear-gradient(120deg, var(--accent), var(--accent-2)); color: #fff; border-color: transparent; box-shadow: var(--shadow); }
+    .btn svg { width: 18px; height: 18px; }
+
+    /* ---------- stats ---------- */
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 52px 0 0; }
+    .stat { background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 22px 18px; box-shadow: var(--shadow-soft); }
+    .stat .num { font-size: clamp(1.9rem, 4vw, 2.6rem); font-weight: 900; letter-spacing: -.03em; background: linear-gradient(120deg, var(--accent-deep), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat .lbl { color: var(--muted); font-size: .92rem; font-weight: 600; margin-top: 2px; }
+    @media (max-width: 620px) { .stats { grid-template-columns: 1fr; } }
+
+    /* ---------- sections ---------- */
+    section.block { position: relative; isolation: isolate; padding: 70px 0 46px; }
+    /* full-bleed, subtly different background tint per section */
+    section.block::before { content: ""; position: absolute; z-index: -1; top: 0; bottom: 0; left: 50%; width: 100vw; transform: translateX(-50%); }
+    #highlights::before  { background: linear-gradient(180deg, #fffafd, #fff4f9); }
+    #vision::before      { background: #fff1f7; }
+    #design::before      { background: linear-gradient(180deg, #f7f0ff, #f9f1ff); }
+    #experiments::before { background: #fff2f4; }
+    #getstarted::before  { background: linear-gradient(180deg, #fff7fb, #ffeef6); }
+    .sec-head { display: flex; align-items: center; gap: 12px; margin: 0 0 6px; }
+    .sec-chip { font-weight: 800; font-size: .78rem; letter-spacing: .14em; text-transform: uppercase; color: #fff; background: linear-gradient(120deg, var(--accent), var(--accent-2)); padding: 6px 12px; border-radius: 999px; }
+    h2.sec-title { font-family: var(--serif); font-size: clamp(1.9rem, 3.8vw, 2.7rem); font-weight: 600; letter-spacing: -.02em; margin: 14px 0 12px; }
+    .lead { font-size: 1.12rem; color: #4a313c; max-width: none; }
+    .lead strong { color: var(--accent-deep); }
+
+    .split { display: grid; grid-template-columns: 1.05fr .95fr; gap: 30px; align-items: center; margin-top: 26px; }
+    .split.rev { grid-template-columns: .95fr 1.05fr; }
+    @media (max-width: 820px) { .split, .split.rev { grid-template-columns: 1fr; } }
+    .prose p { color: #50363f; margin: 0 0 14px; }
+    .prose p:last-child { margin-bottom: 0; }
+
+    figure.fig { margin: 0; background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 16px; box-shadow: var(--shadow-soft); }
+    figure.fig img { width: 100%; height: auto; border-radius: 10px; display: block; }
+    figure.fig figcaption { color: var(--muted); font-size: .86rem; margin-top: 10px; text-align: center; }
+
+    /* showcase figure rows (Highlights) */
+    figure.show { margin: 0 0 20px; }
+    .figrow { display: flex; gap: 16px; align-items: center; justify-content: center; flex-wrap: wrap; }
+    .figrow img { border-radius: 10px; }
+    .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: center; }
+    .shots img { width: 100%; border-radius: 10px; display: block; }
+    @media (max-width: 760px) { .shots { grid-template-columns: 1fr; } }
+
+    /* feature cards */
+    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 26px; }
+    @media (max-width: 760px) { .features { grid-template-columns: 1fr; } }
+    .feature { background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 22px; box-shadow: var(--shadow-soft); transition: transform .14s, border-color .14s; }
+    .feature:hover { transform: translateY(-3px); border-color: var(--accent); }
+    .feature .ico { font-size: 1.5rem; }
+    .feature h3 { margin: 8px 0 6px; font-size: 1.12rem; }
+    .feature p { margin: 0; color: var(--muted); font-size: .95rem; }
+
+    /* pipeline (numbered steps with arrows) */
+    .pipeline { display: flex; align-items: stretch; gap: 8px; margin-top: 28px; }
+    .pipeline .step { flex: 1; background: linear-gradient(180deg, #fff, #fff7fb); border: 1px solid var(--border); border-radius: 18px; padding: 20px 18px; box-shadow: var(--shadow-soft); transition: transform .14s, border-color .14s; }
+    .pipeline .step:hover { transform: translateY(-3px); border-color: var(--accent); }
+    .pipeline .step .num { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; font-weight: 900; color: #fff; background: linear-gradient(120deg, var(--accent), var(--accent-2)); box-shadow: var(--shadow-soft); }
+    .pipeline .step h4 { margin: 11px 0 6px; font-size: 1.08rem; }
+    .pipeline .step p { margin: 0; color: var(--muted); font-size: .92rem; }
+    .pipeline .arrow { display: flex; align-items: center; color: var(--accent); font-size: 1.4rem; font-weight: 800; }
+    .pipeline .arrow.loop { color: var(--accent-2); }
+    @media (max-width: 760px) { .pipeline { flex-direction: column; } .pipeline .arrow { justify-content: center; transform: rotate(90deg); } }
+
+    /* trio blocks (per-section supporting cards) */
+    .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 26px; }
+    @media (max-width: 760px) { .trio { grid-template-columns: 1fr; } }
+    .blk { position: relative; background: linear-gradient(180deg, #fff, #fff7fb); border: 1px solid var(--border); border-radius: 18px; padding: 22px 20px 20px; box-shadow: var(--shadow-soft); transition: transform .14s, border-color .14s; overflow: hidden; }
+    .blk::before { content: ""; position: absolute; left: 0; top: 0; height: 4px; width: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); opacity: .9; }
+    .blk:hover { transform: translateY(-3px); border-color: var(--accent); }
+    .blk .idx { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 10px; font-weight: 900; font-size: .95rem; color: #fff; background: linear-gradient(120deg, var(--accent), var(--accent-2)); box-shadow: var(--shadow-soft); }
+    .blk h3 { margin: 12px 0 6px; font-size: 1.1rem; letter-spacing: -.01em; }
+    .blk h3 code { font-family: "JetBrains Mono", monospace; font-size: .98rem; color: var(--accent-deep); background: var(--bg-soft); padding: 1px 7px; border-radius: 7px; }
+    .blk p { margin: 0; color: var(--muted); font-size: .94rem; }
+    .blk .metric { display: inline-block; margin-top: 10px; font-weight: 800; color: var(--accent-deep); font-size: .9rem; background: var(--bg-soft); border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px; }
+
+    /* experiment gallery */
+    .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 28px; }
+    @media (max-width: 880px) { .gallery { grid-template-columns: 1fr; } }
+    .exp { background: var(--card); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow-soft); transition: transform .14s, border-color .14s; }
+    .exp:hover { transform: translateY(-4px); border-color: var(--accent); }
+    .exp .imgwrap { padding: 14px 14px 0; }
+    .exp img { width: 100%; height: auto; border-radius: 8px; display: block; }
+    .exp .body { padding: 14px 18px 20px; }
+    .exp .tag { font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-deep); }
+    .exp h3 { margin: 4px 0 6px; font-size: 1.08rem; }
+    .exp p { margin: 0; color: var(--muted); font-size: .9rem; }
+    .exp .big { font-weight: 900; color: var(--accent-deep); }
+
+    /* results table */
+    .table-wrap { margin-top: 28px; overflow-x: auto; border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow-soft); background: var(--card); }
+    table.results { width: 100%; border-collapse: collapse; font-size: .96rem; min-width: 640px; }
+    table.results th, table.results td { padding: 14px 18px; text-align: left; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+    table.results thead th { background: var(--bg-soft); color: var(--accent-deep); font-weight: 800; font-size: .76rem; letter-spacing: .06em; text-transform: uppercase; }
+    table.results tbody tr:last-child td { border-bottom: none; }
+    table.results tbody tr:hover { background: #fff5f9; }
+    table.results .model { font-weight: 700; color: var(--fg); }
+    table.results .sub { color: var(--muted); font-weight: 500; font-size: .86rem; }
+    table.results .spd { font-weight: 900; font-size: 1.05rem; background: linear-gradient(120deg, var(--accent-deep), var(--accent-2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .table-note { color: var(--muted); font-size: .85rem; margin: 10px 2px 0; }
+
+    /* install */
+    .panel { margin-top: 28px; background: linear-gradient(180deg, #fff, #fff6fa); border: 1px solid var(--border); border-radius: 18px; padding: 24px; box-shadow: var(--shadow-soft); }
+    .panel h3 { margin: 0 0 12px; font-size: 1.05rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-head h3 { margin: 0 0 12px; }
+    .copy-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font: inherit; font-weight: 700; font-size: .86rem; color: #fff; background: linear-gradient(120deg, var(--accent), var(--accent-2)); border: 1px solid transparent; border-radius: 10px; padding: 8px 14px; box-shadow: var(--shadow-soft); transition: transform .12s ease, filter .12s ease; }
+    .copy-btn:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    .copy-btn:active { transform: none; }
+    .copy-btn svg { width: 15px; height: 15px; }
+    .copy-btn.copied { background: #2ea44f; }
+    pre { background: #2c0f1c; border: 1px solid #45172a; border-radius: 14px; padding: 18px 20px; overflow-x: auto; font-size: .9rem; line-height: 1.6; color: #ffe3ef; margin: 0; }
+    code { font-family: "JetBrains Mono", "SFMono-Regular", Consolas, Menlo, monospace; }
+    .panel .cmt { color: #ff9ec4; }
+
+    /* citation */
+    .cite pre { background: #fff; color: #50363f; border: 1px solid var(--border); }
+
+    footer { margin-top: 80px; border-top: 1px solid var(--border-soft); background: rgba(255,238,245,.5); }
+    .foot-inner { max-width: var(--maxw); margin: 0 auto; padding: 36px 24px; display: flex; flex-wrap: wrap; gap: 14px 26px; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: .92rem; }
+    .foot-inner a { color: var(--accent-deep); text-decoration: none; font-weight: 600; }
+    .foot-inner a:hover { text-decoration: underline; }
+    .foot-sep { color: var(--border); }
+
+    .reveal { opacity: 0; transform: translateY(16px); transition: opacity .6s ease, transform .6s ease; }
+    .reveal.in { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a class="brand" href="#top">
+        <img src="assets/vortex_mark.png" alt="" onerror="this.style.display='none'" />
+        <span class="grad">Vortex</span>
+      </a>
+      <div class="nav-links">
+        <a href="#highlights">Results</a>
+        <a href="#vision">Vision</a>
+        <a href="#design">Design</a>
+        <a href="#experiments">Experiments</a>
+        <a class="hide-sm" href="https://arxiv.org/abs/2606.06453">Paper</a>
+        <a class="hide-sm" href="https://www.infini-ai-lab.cmu.edu/">Lab</a>
+        <a class="cta" href="docs/">Docs</a>
+      </div>
+    </div>
+  </nav>
+
+  <div id="top"></div>
+  <div class="wrap">
+    <header class="hero">
+      <img class="mark" src="assets/vortex_mark.png" alt="Vortex" onerror="this.style.display='none'" />
+      <span class="eyebrow">Agent-Native Sparse Attention</span>
+      <h1 class="title"><span class="grad">Vortex</span></h1>
+      <p class="subtitle">Programmable Sparse Attention for Agents as Algorithm Designers</p>
+      <p class="tagline">Vortex turns sparse-attention algorithm design into something <strong>AI agents can do</strong> — express a flow in a few lines of Python, and Vortex deploys and benchmarks it inside a real LLM serving stack in minutes.</p>
+      <div class="cta-row">
+        <a class="btn primary" href="https://arxiv.org/abs/2606.06453">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h12l4 4v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm11 1.5V8h3.5L15 4.5zM7 12h10v1.5H7V12zm0 4h10v1.5H7V16zm0-8h5v1.5H7V8z"/></svg>
+          Read the Paper
+        </a>
+        <a class="btn" href="docs/">📖 Documentation</a>
+        <a class="btn" href="https://github.com/Infini-AI-Lab/vortex_torch">
+          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
+
+      <div class="stats reveal">
+        <div class="stat"><div class="num">3.46×</div><div class="lbl">throughput of agent-generated sparse attention vs. full attention, accuracy preserved</div></div>
+        <div class="stat"><div class="num">4.7×</div><div class="lbl">throughput on the MLA-based GLM-4.7-Flash</div></div>
+        <div class="stat"><div class="num">1.37×</div><div class="lbl">throughput on the 229B-parameter MiniMax-M2.7</div></div>
+      </div>
+    </header>
+
+    <!-- ================= HIGHLIGHTS ================= -->
+    <section class="block" id="highlights">
+      <div class="sec-head reveal"><span class="sec-chip">★ Highlights</span></div>
+      <h2 class="sec-title reveal">Agents discover sparse attention — and it actually runs faster</h2>
+      <p class="lead reveal">AI agents generate and refine diverse sparse-attention algorithms with Vortex, and every one is benchmarked <strong>end-to-end in a real serving stack</strong> — so these are measured throughput gains, not paper estimates. The headline results:</p>
+
+      <p class="lead reveal" style="margin-top:26px"><strong>From idea to deployed algorithm.</strong> A researcher or agent writes a flow over Vortex's page-centric tensor abstraction, and it compiles into fused kernels that plug straight into SGLang. The payoff is immediate: across agent-generated variants, the best reaches up to <strong>3.46×</strong> the throughput of full attention while preserving accuracy.</p>
+      <figure class="fig show reveal">
+        <div class="figrow">
+          <img src="assets/fig1_workflow.png" alt="The Vortex workflow: papers and agents to vFlow, vTensor, and a serving system" style="width:40%" />
+          <img src="assets/fig1_results.png" alt="Agent-generated sparse attention on the accuracy–throughput plane" style="width:54%" />
+        </div>
+        <figcaption><b>(a)</b> A workflow to study sparse attention with Vortex. &nbsp; <b>(b)</b> Agent-generated sparse attention (Qwen3-1.7B, AIME, NVIDIA H200) — the best reaches up to <strong>3.46×</strong> the throughput of full attention while preserving accuracy.</figcaption>
+      </figure>
+
+      <p class="lead reveal" style="margin-top:26px"><strong>Many agents, many algorithms.</strong> This isn't one hand-tuned kernel. Claude Opus 4.7, Claude Sonnet 4.6, and GPT-5 each generate <em>structurally diverse</em> designs — and after a staged filtering pipeline, the selected ones are <em>efficient</em>: full-attention accuracy at 2–3.1× higher throughput across three benchmarks.</p>
+      <figure class="fig show reveal">
+        <div class="shots">
+          <img src="assets/fig10_inno_a.png" alt="Agent-generated algorithms on RULER" />
+          <img src="assets/fig10_inno_b.png" alt="Agent-generated algorithms on AMC23" />
+          <img src="assets/fig10_inno_c.png" alt="Agent-generated algorithms on AIME24" />
+        </div>
+        <figcaption>Performance of AI-agent-generated algorithms across <b>(a)</b> RULER, <b>(b)</b> AMC23, and <b>(c)</b> AIME24 — Claude Opus 4.7, Claude Sonnet 4.6, and GPT-5 each produce <b>diverse</b> sparse-attention designs; after a staged filtering pipeline, the selected ones are <b>efficient</b> — full-attention accuracy at substantially higher throughput.</figcaption>
+      </figure>
+
+      <p class="lead reveal" style="margin-top:26px"><strong>And it compounds.</strong> Given only the framework and a goal, an agent runs a long-horizon loop — proposing, benchmarking, and refining four variants per round. Over 18 hours (23 iterations, 92 submissions) it steadily pushes the accuracy–throughput frontier outward, entirely on its own.</p>
+      <figure class="fig show reveal">
+        <div class="shots">
+          <img src="assets/fig11_iter_a.png" alt="mean@16 per iteration" />
+          <img src="assets/fig11_iter_b.png" alt="throughput per iteration" />
+          <img src="assets/fig11_iter_c.png" alt="accuracy–throughput frontier colored by iteration" />
+        </div>
+        <figcaption>Long-horizon autonomous optimization on AIME24 (23 iterations, 92 submissions): <b>(a)</b> mean@16 per iteration, <b>(b)</b> throughput per iteration, <b>(c)</b> the accuracy–throughput frontier of all submissions, colored by iteration order.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= VISION ================= -->
+    <section class="block" id="vision">
+      <div class="sec-head reveal"><span class="sec-chip">01 · Vision</span></div>
+      <h2 class="sec-title reveal">Agents as algorithm designers</h2>
+      <p class="lead reveal">Sparse attention has become a fundamental technique for serving large language models. As generation lengths explode across reasoning, agentic systems, and reinforcement learning, <strong>moving the KV cache during decoding</strong> — not compute — is the dominant bottleneck. Attending to only the tokens that matter is the way out, and it now appears both as a core architectural choice in frontier models (DeepSeek, GLM) and as a drop-in optimization for pretrained ones.</p>
+      <div class="prose reveal" style="margin-top:18px">
+        <p>Yet deploying and evaluating <strong>new</strong> sparse-attention algorithms at scale, with real end-to-end speedups, has stayed painfully engineering-intensive — slowing both human researchers and the emerging class of AI agents that could explore this design space. Modern serving systems store the KV cache in a non-contiguous, paged, block-sparse layout reached through indirect addressing, which breaks the contiguous-tensor assumptions of frameworks like PyTorch. As a result, a new idea that is a few lines of math on paper can take thousands of lines of kernel and plumbing code to try.</p>
+        <p>Vortex removes that wall. It is built for <strong>autonomous algorithm discovery</strong>: an AI agent proposes a sparse-attention idea, expresses it in a few lines of high-level Python, and Vortex compiles it into fused kernels that run inside a production serving stack — then measures real throughput and accuracy. The agent reads the result and refines, closing the research loop without a human in the inner iteration.</p>
+        <p>Across hundreds of generated variants, agents consistently discover Pareto-efficient algorithms: full-attention–level accuracy at a fraction of the cost. The best reaches up to <strong>3.46× higher throughput</strong> than full attention while preserving accuracy — and because every variant is benchmarked in a real serving stack, those gains are measured, not theoretical.</p>
+      </div>
+      <p class="lead reveal" style="margin-top:34px">It runs as a closed <strong>discovery loop</strong>:</p>
+      <div class="pipeline reveal">
+        <div class="step"><span class="num">1</span><h4>Express</h4><p>An agent writes the idea in a few lines of high-level Python ops — scoring, reductions, top-<em>k</em>.</p></div>
+        <div class="arrow">→</div>
+        <div class="step"><span class="num">2</span><h4>Deploy</h4><p>Vortex JIT-compiles it into fused kernels inside a real LLM serving stack — no model-code changes.</p></div>
+        <div class="arrow">→</div>
+        <div class="step"><span class="num">3</span><h4>Measure</h4><p>Real throughput and accuracy come back from an end-to-end benchmark, not an estimate.</p></div>
+        <div class="arrow loop">↺</div>
+        <div class="step"><span class="num">4</span><h4>Refine</h4><p>The agent reads the result and proposes the next variant — discovery without a human in the inner loop.</p></div>
+      </div>
+    </section>
+
+    <!-- ================= DESIGN ================= -->
+    <section class="block" id="design">
+      <div class="sec-head reveal"><span class="sec-chip">02 · Design</span></div>
+      <h2 class="sec-title reveal">A frontend for ideas, a backend for serving</h2>
+      <p class="lead reveal">Vortex pairs a <strong>Python-embedded frontend</strong> over a <strong>page-centric tensor abstraction</strong> (<code>vTensor</code>) — concise enough to express a broad range of sparse-attention algorithms — with an efficient backend tightly integrated into modern LLM serving stacks (SGLang). The guiding principle is a clean split: you say <em>what</em> sparsity to apply and <em>how</em> attention is computed, and the framework owns the low-level tensor layout and memory management. Theoretical efficiency becomes real-world throughput, without touching core model code.</p>
+      <div class="prose reveal" style="margin-top:18px">
+        <p>You describe <em>what</em> to attend to — score pages, reduce per-block summaries, select a top-<em>k</em> — and Vortex handles batching, paged KV caching, gather minimization, and kernel fusion. A flow is written as <strong>modular, composable operators</strong> (<code>GeMM</code>, <code>Reduce</code>, <code>Top-K</code>, …) over paged tensors, rather than a monolithic custom kernel per algorithm — so new patterns combine instead of being reimplemented from scratch.</p>
+        <p>Crucially, Vortex treats the <strong>dynamic part</strong> — deciding the sparsity pattern on the fly — as a first-class, optimized stage, not an afterthought. The same abstraction covers MHA and <strong>MLA</strong> models, exact and approximate top-<em>k</em>, and even a programmable per-sequence token budget written as a small CUDA snippet.</p>
+        <p>The result drops into FlashInfer / CUDA Graph / radix-cache decoding — so a new algorithm is deployable and benchmarkable the moment it compiles, and its speedups survive contact with a real serving system.</p>
+      </div>
+      <p class="lead reveal" style="margin-top:34px">Under the hood, a flow flows through <strong>three composable layers</strong>:</p>
+      <div class="trio">
+        <div class="blk reveal"><span class="idx">▣</span><h3><code>vFlow</code></h3><p>A Python-embedded frontend language. Declare what to attend to; the framework handles batching, caching, and fusion.</p></div>
+        <div class="blk reveal"><span class="idx">▦</span><h3><code>vTensor</code></h3><p>A page-centric tensor abstraction where the page is the unit of sparsity — uniform across MHA and MLA models.</p></div>
+        <div class="blk reveal"><span class="idx">▤</span><h3>Serving System</h3><p>A backend tightly integrated with SGLang: FlashInfer kernels, CUDA Graph, and radix-cache decoding.</p></div>
+      </div>
+      <p class="lead reveal" style="margin-top:34px">Together, these close <strong>three gaps</strong> that have kept sparse attention slow to iterate on:</p>
+      <div class="trio">
+        <div class="blk reveal"><span class="idx">⚙︎</span><h3>Dynamic sparsity</h3><p>Static-pattern kernels (FlashInfer, FlexAttention) optimize attention once the pattern is known. Vortex makes computing the pattern on the fly — the accurate, dynamic case — efficient too.</p></div>
+        <div class="blk reveal"><span class="idx">⌘</span><h3>Programmability</h3><p>Adding a variant to a serving system can mean ~2000 lines of code re-implementing <code>GeMM</code>/<code>Reduce</code>/<code>Top-K</code> over paged tensors. In Vortex it is a few composable lines.</p></div>
+        <div class="blk reveal"><span class="idx">🔌</span><h3>Serving compatibility</h3><p>Custom-kernel methods often break paged attention or prefix caching — Quest's original code is <strong>44.4×</strong> slower than full attention. Vortex stays native to the stack.</p></div>
+      </div>
+    </section>
+
+    <!-- ================= EXPERIMENTS ================= -->
+    <section class="block" id="experiments">
+      <div class="sec-head reveal"><span class="sec-chip">03 · Experiments</span></div>
+      <h2 class="sec-title reveal">Discovery, scale, and emerging architectures</h2>
+      <p class="lead reveal">Vortex accelerates sparse-attention research along three axes: <strong>autonomous discovery</strong>, reach into <strong>emerging architectures and very large models</strong>, and use as a <strong>research instrument</strong> for understanding where the routing signal lives.</p>
+      <div class="trio">
+        <div class="blk reveal"><span class="idx">①</span><h3>Autonomous discovery</h3><p>Agents generate and refine diverse algorithms that are consistently Pareto-efficient.</p><span class="metric">up to 3.46× throughput</span></div>
+        <div class="blk reveal"><span class="idx">②</span><h3>Scale &amp; architectures</h3><p>Sparse attention extended to MLA models and very large models that are otherwise hard to experiment with.</p><span class="metric">4.7× GLM-4.7 · 1.37× 229B</span></div>
+        <div class="blk reveal"><span class="idx">③</span><h3>Research instrument</h3><p>A lens on sparse attention itself — pinpointing where the routing signal lives.</p><span class="metric">interpretability</span></div>
+      </div>
+      <p class="lead reveal" style="margin-top:8px">Autonomous discovery is shown in the <a href="#highlights">Highlights</a> above; here we focus on reach — new architectures and the largest models:</p>
+      <div class="gallery">
+        <article class="exp reveal">
+          <div class="imgwrap"><img src="assets/fig12_glm_a.png" alt="Sparse attention on the MLA-based GLM-4.7-Flash" /></div>
+          <div class="body">
+            <div class="tag">MLA models</div>
+            <h3>GLM-4.7-Flash · up to <span class="big">4.7×</span></h3>
+            <p>Three MLA sparse-attention flows (rope-aware / rope-unaware block-sparse, and Quest) expressed in vFlow and swept over block sizes on AIME26 with 32K-token generation — extending sparse attention to an architecture that is otherwise hard to experiment with (NVIDIA B200).</p>
+          </div>
+        </article>
+        <article class="exp reveal">
+          <div class="imgwrap"><img src="assets/fig16_mm_a.png" alt="Sparse attention on the 229B MiniMax-M2.7 with tensor parallelism" /></div>
+          <div class="body">
+            <div class="tag">Scaling · 229B</div>
+            <h3>MiniMax-M2.7 · up to <span class="big">1.37×</span></h3>
+            <p>The same flows scale to a 229B-parameter model under tensor parallelism (TP=4, four NVIDIA B200 GPUs) on AIME26 — sparse attention staying practical at the largest scales, with full-attention accuracy preserved.</p>
+          </div>
+        </article>
+      </div>
+      <div class="table-wrap reveal">
+        <table class="results">
+          <thead>
+            <tr><th>Model</th><th>Benchmark</th><th>Hardware</th><th>Throughput vs. full attn</th><th>Accuracy</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="model">Qwen3-1.7B <span class="sub">agent-discovered</span></td><td>AIME24</td><td>H200</td><td><span class="spd">↑ 3.46×</span></td><td>matched (38.96 vs 38.54)</td></tr>
+            <tr><td class="model">GLM-4.7-Flash <span class="sub">MLA</span></td><td>AIME26 · 32K</td><td>B200</td><td><span class="spd">↑ 4.7×</span></td><td>matched (mean@16 ≈ 0.75)</td></tr>
+            <tr><td class="model">Qwen3-30B-A3B <span class="sub">MoE, FP8</span></td><td>AIME24 · 32K</td><td>B200</td><td><span class="spd">↑ 1.63×</span></td><td>matched (0.802 vs 0.80)</td></tr>
+            <tr><td class="model">MiniMax-M2.7 <span class="sub">229B, TP=4</span></td><td>AIME26 · 32K</td><td>4× B200</td><td><span class="spd">↑ 1.37×</span></td><td>≥ full (0.84 vs 0.83)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note reveal">Best operating point per model; “throughput vs. full attn” is end-to-end decode throughput at matched-or-better accuracy. Block top-<em>k</em> also reaches up to <strong>3.60×</strong> server throughput and <strong>11.7–12.8×</strong> lower P95 latency at high request rates.</p>
+      <p class="lead reveal" style="margin-top:30px">Because every algorithm is benchmarked end-to-end in a real serving stack, these are <strong>measured</strong> throughput gains, not paper estimates. Beyond raw numbers, Vortex doubles as a research instrument: agents produce <strong>structurally diverse</strong> algorithms, and controlled ablations using the same abstraction localize <em>where the routing signal lives</em> — a small set of query–key channel groups turns out to carry most of the routing information across model sizes.</p>
+    </section>
+
+    <!-- ================= GET STARTED ================= -->
+    <section class="block" id="getstarted">
+      <div class="sec-head reveal"><span class="sec-chip">Get started</span></div>
+      <h2 class="sec-title reveal">Install in a minute</h2>
+      <div class="panel reveal">
+        <h3>Install</h3>
+        <pre><code>git clone --recursive https://github.com/Infini-AI-Lab/vortex_torch.git
+cd vortex_torch
+
+<span class="cmt"># SGLang dependency (vendored)</span>
+cd third_party/sglang/v0.5.9/sglang
+pip install -e "python"
+cd ../../../../
+
+<span class="cmt"># Vortex</span>
+pip install -e .</code></pre>
+      </div>
+      <div class="panel cite reveal">
+        <div class="panel-head">
+          <h3>Cite</h3>
+          <button class="copy-btn" id="copyCite" type="button" aria-label="Copy citation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+        <pre><code id="citeText">@misc{chen2026vortexefficientprogrammablesparse,
+  title  = {Vortex: Efficient and Programmable Sparse Attention Serving for AI Agents},
+  author = {Zhuoming Chen and Xinrui Zhong and Qilong Feng and Ranajoy Sadhukhan and
+            Yang Zhou and Michael Qizhe Shieh and Zhihao Jia and Beidi Chen},
+  year   = {2026},
+  eprint = {2606.06453},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  url    = {https://arxiv.org/abs/2606.06453}
+}</code></pre>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="foot-inner">
+      <span>Built by <a href="https://www.infini-ai-lab.cmu.edu/">Infini-AI-Lab</a>, Carnegie Mellon University</span>
+      <span class="foot-sep">·</span>
+      <a href="https://arxiv.org/abs/2606.06453">Paper</a>
+      <span class="foot-sep">·</span>
+      <a href="docs/">Docs</a>
+      <span class="foot-sep">·</span>
+      <a href="https://github.com/Infini-AI-Lab/vortex_torch">GitHub</a>
+      <span class="foot-sep">·</span>
+      <a href="https://www.infini-ai-lab.cmu.edu/">Lab</a>
+      <span class="foot-sep">·</span>
+      <a href="https://infini-ai-lab.github.io/ai-environment-architect/">Related: AI Environment Architect</a>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var els = document.querySelectorAll('.reveal');
+      if (!('IntersectionObserver' in window)) { els.forEach(function (e) { e.classList.add('in'); }); return; }
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+      }, { threshold: 0.12 });
+      els.forEach(function (e) { io.observe(e); });
+    })();
+
+    (function () {
+      var btn = document.getElementById('copyCite');
+      var src = document.getElementById('citeText');
+      if (!btn || !src) return;
+      var label = btn.querySelector('span');
+      btn.addEventListener('click', function () {
+        var text = src.innerText;
+        var done = function () {
+          btn.classList.add('copied');
+          if (label) label.textContent = 'Copied!';
+          setTimeout(function () { btn.classList.remove('copied'); if (label) label.textContent = 'Copy'; }, 1800);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+        } else { fallback(text, done); }
+      });
+      function fallback(text, done) {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    })();
+  </script>
+</body>
+</html>

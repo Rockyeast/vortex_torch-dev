@@ -85,6 +85,18 @@ class Reshape(vOp):
             tensor_id=len(ctx.tensor_list),
         )
 
+        # fused ``tl.reshape``（Schedule.W）要求内部维度是 2 的幂，并且 tile
+        # 不能包含 padding。否则 reshape 时 padding lane 可能被混进真实位置。
+        # 如果输入或输出的真实内部维度需要 padding，就退回独立的 Schedule.S
+        # torch reshape，只处理真实区域 ``[:, :x1, :y1] -> [:, :x2, :y2]``。
+        # 这种路径对格式和维度更宽容；如果两边都不需要 padding，就保留快速
+        # fused path。
+        self.schedule = (
+            Schedule.S
+            if (x.needs_padding() or self.output_buffer.needs_padding())
+            else Schedule.W
+        )
+
         # 在 indexer graph 里登记当前算子和输入/输出关系。
         ctx.tensor_list.append(self.output_buffer)
         ctx.output_tensor_to_op_list.append(len(ctx.op_list))

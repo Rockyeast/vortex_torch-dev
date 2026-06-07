@@ -45,11 +45,17 @@ class FORMAT(Enum):
         BATCHED: 标准 dense batch 张量，例如 ``[B, N, D]``。
         RAGGED: ragged 张量，每个 batch 的序列长度或元素数量可以不同。
         PAGED: paged 张量，用于被切成 page/chunk 的大数据或流式数据。
+        PARAMETER: 跨 batch 共享的学习常量，例如
+            :class:`~vortex_torch.indexer.Parameter`。它没有 request/page 轴，
+            值会烘焙进编译后的函数。收到 PARAMETER 操作数的算子
+            （例如 ``GeMM``）会走独立的 ``Schedule.S`` ``torch.matmul``，
+            而不是融合进 per-workload kernel；这样大权重不会进入 tiled kernel。
     """
 
     BATCHED = 0
     RAGGED = 1
     PAGED = 2
+    PARAMETER = 3
 
 
 def _next_pow2(n: int) -> int:

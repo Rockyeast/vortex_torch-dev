@@ -284,3 +284,7 @@ sgl-kernel/csrc/**/*_musa/
 !**/*.jsonl
 !**/*.png
 !**/*.pdf
+
+# Re-ignore Python bytecode caches under debug* dirs (the negations above re-include them)
+**/debug*/__pycache__/
+**/debug*/**/__pycache__/

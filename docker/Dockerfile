@@ -64,7 +64,7 @@ RUN pip install --no-cache-dir -e .
 
 # GLM-4.7-Flash note: this image ships transformers 4.57.1 (sglang's pin), which
 # does NOT recognize the `glm4_moe_lite` architecture. If you need GLM-4.7-Flash,
-# override transformers with the pinned commit (see install_vortex_glm.bash):
+# override transformers with the pinned commit (see install_vortex_glm.sh):
 #   pip install --upgrade \
 #     "git+https://github.com/huggingface/transformers.git@76732b4e7120808ff989edbd16401f61fa6a0afa"
 

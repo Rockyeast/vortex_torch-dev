@@ -67,16 +67,24 @@ autodoc_default_options = {
 }
 
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
-myst_enable_extensions = ["deflist", "linkify", "substitution", "tasklist"]
+# NOTE: "linkify" is intentionally omitted — it needs the extra `linkify-it-py`
+# dependency (absent in the docs CI) and we use explicit Markdown links anyway.
+myst_enable_extensions = ["deflist", "substitution", "tasklist"]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "landing", "Thumbs.db", ".DS_Store"]
 language = "en"
 
 # -- HTML --------------------------------------------------------------------
 html_theme = "furo"
 html_title = f"{project} Documentation"
 html_static_path = ["_static"]
+html_favicon = "_static/vortex_mark.png"
+# Vortex mark in the sidebar (same image for light & dark furo modes).
+html_theme_options = {
+    "light_logo": "vortex_mark.png",
+    "dark_logo": "vortex_mark.png",
+}
 
 # -- Intersphinx -------------------------------------------------------------
 intersphinx_mapping = {

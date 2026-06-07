@@ -93,6 +93,20 @@ def _create_cuda_mla_backend(runner):
     return VortexCudaMLABackend(runner)
 
 
+def _create_cuda_mla_profile_backend(runner):
+    # Profiling twin of cuda_mla: identical decode + per-token per-head
+    # p-coverage / recall@N stats. Importing the module self-registers its
+    # MHA-prefill dispatch handler. Not cuda-graph compatible (run eager).
+    sa = runner.server_args
+    if not runner.use_mla_backend or not sa.enable_vortex_sparsity:
+        raise ValueError(
+            "cuda_mla_profile backend requires an MLA model with "
+            "enable_vortex_sparsity=True."
+        )
+    from .attention_backend.cuda_mla_profile import VortexCudaMLAProfileBackend
+    return VortexCudaMLAProfileBackend(runner)
+
+
 def integrate() -> bool:
     """Register vortex attention backends into sglang's public registry.
 
@@ -117,6 +131,7 @@ def integrate() -> bool:
     if "triton" in B:
         B["triton"] = _make_triton_shim(B["triton"])
     B["cuda_mla"] = _create_cuda_mla_backend
+    B["cuda_mla_profile"] = _create_cuda_mla_profile_backend
 
     _INTEGRATED = True
     return True
@@ -220,12 +235,26 @@ def make_kv_pool(runner):
 
 
 def kv_cell_size(runner, num_layers: int, kv_size: int) -> int:
-    """Vortex KV-cache bytes-per-token for the available-memory estimate."""
-    from sglang.srt.layers.dp_attention import get_attention_tp_size
-    return int(
-        runner.model_config.get_num_kv_heads(get_attention_tp_size())
-        * runner.model_config.head_dim
-        * num_layers
-        * runner.sparse_attention.get_token_ratio()
-        * kv_size
-    )
+    """Vortex KV-cache bytes-per-token for the available-memory estimate.
+
+    ``get_token_ratio()`` already encodes (all cache fields) / (the bare KV
+    base), so we scale the model's bare per-token KV element count by it. The
+    base differs by architecture:
+
+      * **MLA**: the single shared latent ``kv_lora_rank + qk_rope_head_dim``
+        (matches sglang's dense-MLA cell size, which ``flow_mla``'s token_ratio
+        is defined against — base_bytes = block_size·latent_dim·elem).
+      * **MHA/GQA**: ``num_kv_heads · head_dim`` (``flow``'s token_ratio base).
+    """
+    tr = runner.sparse_attention.get_token_ratio()
+    if getattr(runner, "use_mla_backend", False):
+        base_elems = (
+            runner.model_config.kv_lora_rank + runner.model_config.qk_rope_head_dim
+        )
+    else:
+        from sglang.srt.layers.dp_attention import get_attention_tp_size
+        base_elems = (
+            runner.model_config.get_num_kv_heads(get_attention_tp_size())
+            * runner.model_config.head_dim
+        )
+    return int(base_elems * num_layers * tr * kv_size)

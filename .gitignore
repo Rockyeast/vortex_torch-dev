@@ -3,8 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 debug/
-debug*
+debug*~
+debug.py
+examples/misc/debug_thinking.py
+third_party/sglang/v0.5.9/sglang/python/sglang/srt/debug_utils/__pycache__
 marks/
+slides/
 # Vendored sglang — track upstream content despite noise rules above and below.
 # Directory rules must be negated before their contents become re-includable.
 !third_party/sglang/**/tests/
@@ -17,7 +21,7 @@ marks/
 !third_party/sglang/**/*.jsonl
 !third_party/sglang/**/*.png
 !third_party/sglang/**/*.pdf
-
+bench_mla_opt/
 # C extensions
 *.so
 *.whl
@@ -228,6 +232,11 @@ work_dirs/
 
 !logo.png
 
+# README/landing assets — track despite the global *.png rule.
+!assets/*.png
+# Sphinx docs static assets (logo/favicon) — track despite the global *.png rule.
+!docs/_static/*.png
+
 # Prerequisites
 *.d
 
@@ -278,12 +287,12 @@ Cargo.lock
 
 # Claude Code per-machine permissions (do not commit)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 *.jsonl
-!examples/lcbv5.jsonl
-!examples/aime25.jsonl
-!examples/aime26.jsonl
-!examples/aime26_minimax.jsonl
-!examples/aime26_glm.jsonl
+!examples/ruler/validation.jsonl
+!examples/math/*.jsonl
+!examples/code/*.jsonl
+!.claude/commands/debug.md
 RLG
 .codex
 .claude/.nfs*
@@ -292,9 +301,36 @@ RLG/
 scripts/
 vortex_torch/kernels/centroid_score
 
-# Local source-tree clones (flashinfer / flash-attention / cpu_kernels) used
-# for reference; not part of this repo. Anchored so only the root-level dirs
-# are ignored.
+# Local source-tree clone (cpu_kernels) used for reference; not part of this
+# repo. (flashinfer / flash-attention are now git submodules under third_party/.)
 /flashinfer/
 /flash-attention/
 /cpu_kernels/
+# Vortex paper sources (extracted locally; not part of this repo)
+vortex_paper.zip
+vortex_paper/
+Vortex_Arxiv.zip
+Vortex_Arxiv_overleaf.zip
+Vortex_Arxiv/
+# Research toolkit: regenerable trace blobs + generated survey briefs
+/algorithm_scientist/research/traces/
+/algorithm_scientist/research/briefs/
+# Paper result-plotting scratch (matplotlib scripts + raw summary dumps)
+/plot.py
+/new_results/
+# Benchmark/summary output archive (moved summary* dirs live here)
+/result/
+# Twitter thread assets (local social-prep, not part of the repo)
+/twitter/
+
+# RULER flow-sweep outputs
+examples/ruler/sweep_results/
+
+# Internal submission test/sweep trees (kept local, untracked)
+submissions/_flow_sweep18/
+submissions/_qwen3_14b_test/
+submissions/_flow_algorithms_test_variants_pagesize/
+submissions/_flow_algorithms_test_variants/
+submissions/_flow_algorithms_test_tc/
+submissions/_flow_algorithms_test/
+submissions/_block_table_test/
