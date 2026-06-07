@@ -1,39 +1,35 @@
-"""Pure-metadata tensor type used throughout the vortex graph + compiler.
+"""vortex 计算图和编译器里使用的纯元数据 tensor 类型。
 
-A :class:`vTensor` does **not** carry any real storage. It is a small
-descriptor that records exactly what the rest of the system needs to
-reason about a tensor at graph-construction and codegen time:
+:class:`vTensor` **不携带真实存储**。它只是一个很小的描述对象，
+记录系统在建图和 codegen 阶段理解一个 tensor 所需的信息：
 
-  * ``shape``        — tuple of ints, the *real* logical shape.
-  * ``padded_shape`` — tuple of ints, each entry rounded up to the next
-                       power of two (only ``shape[1]`` / ``shape[2]`` may
-                       differ from ``shape``; ``shape[0]`` is the leading
-                       axis and is not subject to Triton block-shape
-                       pow2 constraints).
+  * ``shape``        — int 元组，表示真实逻辑形状。
+  * ``padded_shape`` — int 元组，每个相关维度向上补到最近的 2 的幂。
+                       只有 ``shape[1]`` / ``shape[2]`` 可能和 ``shape``
+                       不同；``shape[0]`` 是前导轴，不受 Triton block-shape
+                       必须为 2 的幂这个约束影响。
   * ``dtype``        — :class:`torch.dtype`
   * ``device``       — :class:`torch.device` / str / ``None``
-  * ``_format``      — :class:`FORMAT` (BATCHED / RAGGED / PAGED)
-  * ``tensor_id``    — int, the graph-level identity used by the compiler
+  * ``_format``      — :class:`FORMAT`，即 BATCHED / RAGGED / PAGED
+  * ``tensor_id``    — int，编译器使用的计算图级别身份标识
 
-Why ``padded_shape``: Triton's block-shape constexprs (``tl.zeros``,
-``tl.arange``, ``tl.reshape``, ``tl.make_block_ptr.block_shape``, etc.)
-must each be a power of two. Real models (e.g. Qwen3-14B with
-``num_attention_heads // num_key_value_heads == 5``) carry tensors whose
-``shape[1]`` is **not** a power of two. The compiler emits tile sizes
-from ``padded_shape`` while keeping memory-addressing math (strides,
-per-row offsets, divisors in ``Mean``) anchored to ``shape``; codegens
-add load/store masks that select the real-shape lanes whenever
-``padded_shape != shape``. When ``shape`` is already pow2,
-``padded_shape == shape`` and no masking is emitted, so power-of-two
-models pay no overhead.
+为什么需要 ``padded_shape``：Triton 的 block-shape constexpr
+（例如 ``tl.zeros``、``tl.arange``、``tl.reshape``、
+``tl.make_block_ptr.block_shape`` 等）通常要求每个维度是 2 的幂。
+真实模型里会出现非 2 的幂维度，例如 Qwen3-14B 中
+``num_attention_heads // num_key_value_heads == 5``。编译器会根据
+``padded_shape`` 生成 tile 大小，但内存寻址数学（stride、每行 offset、
+``Mean`` 中的除数等）仍然基于真实 ``shape``。当
+``padded_shape != shape`` 时，codegen 会额外生成 load/store mask，
+只读写真实形状对应的 lane。如果 ``shape`` 已经是 2 的幂，
+则 ``padded_shape == shape``，不会生成额外 mask，2 的幂模型没有额外开销。
 
-It also exposes ``dim()`` for parity with ``torch.Tensor`` so existing
-profile-time validation code (``assert x.dim() == 3``) keeps working.
+它还提供 ``dim()``，与 ``torch.Tensor`` 保持接口一致，这样已有的
+profile 阶段校验代码（例如 ``assert x.dim() == 3``）可以继续工作。
 
-There is intentionally **no** torch op support, no ``__torch_function__``
-override, no parent ``torch.Tensor`` class. ``vTensor`` is just metadata.
-Real tensors used by the runtime/execute path stay as plain
-``torch.Tensor`` instances.
+这里刻意 **不支持** torch op，没有 ``__torch_function__`` 覆盖，也不继承
+``torch.Tensor``。``vTensor`` 只是元数据。运行时/execute 路径真正参与计算的
+真实张量仍然是普通 ``torch.Tensor`` 实例。
 """
 
 from __future__ import annotations
@@ -43,12 +39,12 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 
 class FORMAT(Enum):
-    """Tensor storage/layout format.
+    """tensor 的存储/布局格式。
 
-    Attributes:
-        BATCHED: Standard dense batched tensors (e.g., ``[B, N, D]``).
-        RAGGED: Ragged tensors with variable-length sequences or elements per batch.
-        PAGED: Paged tensors used for large or streaming data split into pages/chunks.
+    属性:
+        BATCHED: 标准 dense batch 张量，例如 ``[B, N, D]``。
+        RAGGED: ragged 张量，每个 batch 的序列长度或元素数量可以不同。
+        PAGED: paged 张量，用于被切成 page/chunk 的大数据或流式数据。
     """
 
     BATCHED = 0
@@ -57,11 +53,11 @@ class FORMAT(Enum):
 
 
 def _next_pow2(n: int) -> int:
-    """Round ``n`` up to the next power of two.
+    """把 ``n`` 向上取整到最近的 2 的幂。
 
-    ``_next_pow2(1) == 1``. For ``n <= 0`` returns ``1`` (defensive; the
-    compiler never asks about non-positive dims). For positive pow2
-    inputs the result is the input.
+    ``_next_pow2(1) == 1``。如果 ``n <= 0``，返回 ``1``。这是防御性处理；
+    正常情况下编译器不会查询非正维度。正整数且本来就是 2 的幂时，
+    返回输入本身。
     """
     n = int(n)
     if n <= 1:
@@ -70,16 +66,14 @@ def _next_pow2(n: int) -> int:
 
 
 def _compute_padded_shape(shape: Sequence[int]) -> Tuple[int, ...]:
-    """Return ``shape`` with ``shape[1]`` and ``shape[2]`` rounded up to
-    the next power of two. Other axes are passed through unchanged.
+    """返回补齐后的 ``shape``，只把 ``shape[1]`` 和 ``shape[2]`` 向上补到
+    最近的 2 的幂。其他轴保持不变。
 
-    Rationale: Triton block-shape constexprs at axes 1 and 2 of the
-    per-workload tile (``[chunk, D_0, D_1]``) must be pow2. The leading
-    axis (``shape[0]``) is the ragged/paged buffer count and is sized
-    by ``workload_chunk_size`` / ``num_blocks_per_page`` (already pow2
-    by config). Padding only the inner two axes keeps the change
-    minimal and avoids touching addressing math that depends on
-    ``shape[0]``.
+    原因：Triton 对每个 workload tile（``[chunk, D_0, D_1]``）的第 1、
+    第 2 维 block-shape constexpr 通常要求是 2 的幂。前导轴
+    ``shape[0]`` 是 ragged/paged buffer 数量，由 ``workload_chunk_size`` /
+    ``num_blocks_per_page`` 决定，配置上已经是 2 的幂。只 padding 内部两轴，
+    改动最小，也避免影响依赖 ``shape[0]`` 的寻址数学。
     """
     shape = tuple(int(s) for s in shape)
     if len(shape) < 2:
@@ -92,13 +86,11 @@ def _compute_padded_shape(shape: Sequence[int]) -> Tuple[int, ...]:
 
 
 class vTensor:
-    """Pure-metadata virtual tensor.
+    """纯元数据虚拟 tensor。
 
-    Carries the descriptor fields used by the graph builder, the
-    compiler, and the codegen layer. It does not own any GPU / CPU
-    memory and intentionally cannot participate in torch ops — code
-    that wants to compute on real data should hold a ``torch.Tensor``
-    separately and use the ``vTensor`` only for graph bookkeeping.
+    携带 graph builder、compiler 和 codegen 层需要的描述字段。它不拥有任何
+    GPU / CPU 内存，并且刻意不能参与 torch op。真正想对数据做计算的代码，
+    应该单独持有 ``torch.Tensor``；``vTensor`` 只用于计算图记账。
     """
 
     __slots__ = ("shape", "padded_shape", "dtype", "device", "_format", "tensor_id")
@@ -124,13 +116,11 @@ class vTensor:
         if not isinstance(_format, FORMAT):
             raise TypeError(f"_format must be a FORMAT enum, got {type(_format).__name__}")
 
-        # Normalize ``shape`` so ``shape[i]``, ``len(shape)`` and ``tuple(shape)``
-        # all behave like ``torch.Tensor.shape``.
+        # 标准化 ``shape``，让 ``shape[i]``、``len(shape)`` 和 ``tuple(shape)``
+        # 的行为都类似 ``torch.Tensor.shape``。
         self.shape = tuple(int(s) for s in shape)
-        # ``padded_shape`` derives from ``shape`` by default; callers may
-        # override only when they're hand-building a tensor from a
-        # source that already has a padded view (rare — pickle/copy
-        # path uses this).
+        # 默认根据 ``shape`` 推导 ``padded_shape``。只有在手动从已有 padded 视图
+        # 构造 tensor 时，调用方才需要覆盖它；这种情况很少，主要用于 pickle/copy 路径。
         if padded_shape is None:
             self.padded_shape = _compute_padded_shape(self.shape)
         else:
@@ -140,9 +130,9 @@ class vTensor:
         self._format = _format
         self.tensor_id = tensor_id
 
-    # -------- shape helpers --------
+    # -------- 形状辅助方法 --------
     def dim(self) -> int:
-        """Number of dimensions; mirrors :meth:`torch.Tensor.dim`."""
+        """维度数量；对齐 :meth:`torch.Tensor.dim`。"""
         return len(self.shape)
 
     @property
@@ -156,19 +146,19 @@ class vTensor:
         return n
 
     def size(self, dim: Optional[int] = None):
-        """Mirror of :meth:`torch.Tensor.size`."""
+        """对齐 :meth:`torch.Tensor.size`。"""
         if dim is None:
             return self.shape
         return self.shape[dim]
 
     def needs_padding(self) -> bool:
-        """True iff ``padded_shape != shape`` — i.e. at least one inner
-        dim is not already a power of two and codegen must emit
-        load/store masks.
+        """当且仅当 ``padded_shape != shape`` 时返回 True。
+
+        这表示至少一个内部维度不是 2 的幂，codegen 必须生成 load/store mask。
         """
         return self.padded_shape != self.shape
 
-    # -------- repr --------
+    # -------- 字符串表示 --------
     def __repr__(self) -> str:
         pad = "" if self.padded_shape == self.shape else f", padded={self.padded_shape}"
         return (
@@ -192,7 +182,7 @@ def _rebuild_vtensor(shape, dtype, device, _format, tensor_id, padded_shape=None
     )
 
 
-# -------- convenience factory --------
+# -------- 便捷构造函数 --------
 def as_vtensor(
     x: Any = None,
     _format: FORMAT = FORMAT.BATCHED,
@@ -202,27 +192,25 @@ def as_vtensor(
     dtype: Optional[torch.dtype] = None,
     device: Optional[Union[torch.device, str]] = None,
 ) -> vTensor:
-    """Build a :class:`vTensor`.
+    """构造一个 :class:`vTensor`。
 
-    Three calling styles, all returning a fresh ``vTensor`` (or, for an
-    existing ``vTensor``, the same object re-tagged):
+    支持三种调用方式。它们都会返回新的 ``vTensor``；如果输入已经是
+    ``vTensor``，则会在原对象上重新打标签并返回同一个对象。
 
-    1. **Re-tag an existing vTensor** — ``as_vtensor(vt, fmt, tid)``
-       overwrites ``vt._format`` and ``vt.tensor_id`` in place and
-       returns ``vt``. Useful when the caller wants to add an existing
-       tensor descriptor to the graph under a fresh id. ``padded_shape``
-       is preserved.
+    1. **给已有 vTensor 重新打标签**：``as_vtensor(vt, fmt, tid)``
+       会原地覆盖 ``vt._format`` 和 ``vt.tensor_id``，并返回 ``vt``。
+       当调用方想把已有 tensor 描述符用新的 id 加入计算图时很有用。
+       ``padded_shape`` 会被保留。
 
-    2. **Extract metadata from a torch.Tensor** — ``as_vtensor(real, fmt, tid)``
-       reads ``shape``, ``dtype``, ``device`` from ``real`` and returns
-       a brand-new ``vTensor``. ``padded_shape`` is derived from
-       ``shape``. The original tensor is **not** retained — vTensor is
-       pure metadata.
+    2. **从 torch.Tensor 提取元数据**：``as_vtensor(real, fmt, tid)``
+       会从 ``real`` 读取 ``shape``、``dtype``、``device``，并返回一个全新的
+       ``vTensor``。``padded_shape`` 会由 ``shape`` 推导。原始 tensor
+       **不会** 被保留；vTensor 是纯元数据。
 
-    3. **Direct construction by kwargs** —
+    3. **通过 kwargs 直接构造**：
        ``as_vtensor(_format=fmt, tensor_id=tid, shape=..., dtype=..., device=...)``.
-       Use this when no real torch tensor is available (the common case
-       once the compile path is fully virtualized).
+       当没有真实 torch tensor 可用时使用这种方式；当编译路径完全虚拟化后，
+       这是常见情况。
     """
     if isinstance(x, vTensor):
         x._format = _format
@@ -254,7 +242,7 @@ def as_vtensor(
 
 
 if __name__ == "__main__":
-    # Direct construction
+    # 直接构造
     a = vTensor(shape=(2, 3, 4), dtype=torch.bfloat16, device="cuda:0",
                 _format=FORMAT.RAGGED, tensor_id=0)
     print("a:", a, "padded:", a.padded_shape, "needs_padding:", a.needs_padding())

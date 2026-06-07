@@ -6,27 +6,27 @@ from ..utils import Schedule
 
 class Save(vOp):
     r"""
-    Persist a per-page indexer value across decode steps (paired with
-    :class:`Load`) by copying it into a preallocated cache field.
+    把每个 page 的 indexer 状态持久保存到预先分配好的 cache 字段里，
+    这样跨 decode step 也能继续使用。它通常和 :class:`Load` 配套使用。
 
     :Math:
         .. math::
 
             O \leftarrow X
 
-        (a format/layout copy ``RAGGED`` → ``PAGED``; no arithmetic).
-    :__init__: ``Save()`` — no arguments.
-    :__call__: ``op(x, o, ctx=ctx)`` — ``x`` ``[S, D_0, D_1]`` (``RAGGED``) is
-        written **in place** into the preallocated ``o`` (``PAGED``, matching
-        ``D_0`` / ``D_1``). Returns nothing.
-    :Note: write side of the persistent-state pattern; a flow that uses
-        ``Save`` requires the engine to set ``disable_radix_cache=True``.
+        这是格式/布局拷贝：``RAGGED`` -> ``PAGED``，不做数学运算。
+    :__init__: ``Save()``；不需要参数。
+    :__call__: ``op(x, o, ctx=ctx)``；``x`` 是 ``[S, D_0, D_1]``（``RAGGED``），
+        会被 **原地写入** 预先分配的 ``o``（``PAGED``，内部 ``D_0`` / ``D_1``
+        必须匹配）。没有返回值。
+    :Note: 这是持久状态模式里的写入侧；使用 ``Save`` 的 flow 要求 engine 设置
+        ``disable_radix_cache=True``。
     """
 
-    # Dispatch table keyed by x_format -> resolved output format.
+    # 按 x_format 分发到对应的输出格式。
     _impl_map: Dict[FORMAT, FORMAT] = {
         FORMAT.RAGGED: FORMAT.PAGED,
-        # Add more entries if you support other formats.
+        # 如果以后支持其他格式，在这里继续加。
     }
 
     def __init__(self):
@@ -34,20 +34,20 @@ class Save(vOp):
         self.output_format: Optional[FORMAT] = None
         self.schedule = Schedule.W
 
-    # ---------------- profile ----------------
+    # ---------------- profile 阶段 ----------------
     def profile(self, x: vTensor, o: vTensor, ctx: Context) -> vTensor:
-        r"""Trace-time: validate ``x`` / ``o`` (rank-3, matching ``D_0`` /
-        ``D_1``, compatible formats), register the op, and return ``o`` as the
-        output view (no buffer is allocated)."""
+        r"""trace 阶段：校验 ``x`` / ``o``，两者都必须是 rank-3，内部
+        ``D_0`` / ``D_1`` 匹配，格式兼容。随后注册这个算子，并把 ``o``
+        作为输出视图返回；这里不会分配新的 buffer。"""
         prefix = self._prefix()
 
-        # Type & rank checks
+        # 类型和维度数量检查
         assert isinstance(x, vTensor), f"{prefix}profile expects x to be vTensor, got {type(x)}"
         assert isinstance(o, vTensor), f"{prefix}profile expects o to be vTensor, got {type(o)}"
         assert x.dim() == 3, f"{prefix}expected 3D x [S, D0, D1], got {tuple(x.shape)}"
         assert o.dim() == 3, f"{prefix}expected 3D o [S, D0, D1], got {tuple(o.shape)}"
 
-        # Shape checks: D0/D1 must match (S may differ by layout; implementation handles it)
+        # 形状检查：D0/D1 必须匹配。S 轴可能因为布局不同而不同，具体实现会处理。
         assert x.shape[1] == o.shape[1], (
             f"{prefix}expected matching D0: x.shape[1]={x.shape[1]} vs o.shape[1]={o.shape[1]}"
         )
@@ -55,7 +55,7 @@ class Save(vOp):
             f"{prefix}expected matching D1: x.shape[2]={x.shape[2]} vs o.shape[2]={o.shape[2]}"
         )
 
-        # Dispatch by x format
+        # 根据 x 的格式分发
         x_fmt = x._format
         assert x_fmt in self._impl_map, (
             f"{prefix}no implementation for x_fmt={x_fmt}. "
@@ -63,29 +63,26 @@ class Save(vOp):
         )
         self.output_format = self._impl_map[x_fmt]
 
-        # Output format must match the resolved format from dispatch
+        # 输出格式必须和分发表推导出的格式一致
         assert o._format == self.output_format, (
             f"{prefix}output format mismatch. Expected {self.output_format}, got {o._format}"
         )
 
-        # Device consistency
+        # 设备一致性检查
         assert x.device == o.device, (
             f"{prefix}x and o must be on the same device "
             f"(x.device={x.device}, o.device={o.device})"
         )
 
-        # Save is a *side-effect writer*: the op stores back into a
-        # caller-provided cache field. We intentionally do NOT claim
-        # ``o.tensor_id`` as Save's producer in ``output_tensor_to_op_list``
-        # — if Load elsewhere in the graph reads the same cache field, it
-        # must see the previous-step value, not Save's updated value, and
-        # overriding the producer slot would create a Load → Save cycle
-        # through the DAG.
+        # Save 是一个“带副作用的写入算子”：它会写回调用方提供的 cache 字段。
+        # 这里故意不把 ``o.tensor_id`` 登记成由 Save 产生，也就是不改
+        # ``output_tensor_to_op_list``。原因是：如果图里别处有 Load 读取同一个
+        # cache 字段，它应该读到上一个 step 的值，而不是本次 Save 写入后的值。
+        # 如果把 producer 覆盖成 Save，就可能在 DAG 里制造 Load -> Save 的环。
         #
-        # Instead we register the op's id in ``side_effect_op_ids``; the
-        # compiler seeds its op-DFS from that set so Save survives DCE,
-        # and the target tensor is promoted to a final output so the
-        # subgraph emits a ``tl.store`` for it.
+        # 所以这里改为把当前 op id 记录到 ``side_effect_op_ids``。compiler 会从
+        # 这个集合开始做 op DFS，确保 Save 不会被 DCE 当成无用节点删掉；同时目标
+        # tensor 会被提升成最终输出，让子图为它生成 ``tl.store``。
         save_op_id = len(ctx.op_list)
         ctx.op_list.append(self)
         ctx.op_to_input_tensor_list.append([x.tensor_id])
@@ -97,25 +94,25 @@ class Save(vOp):
 
 class Load(vOp):
     r"""
-    Read back a per-page value persisted by :class:`Save` (the read side of
-    the cross-decode-step persistent-state pattern).
+    读回由 :class:`Save` 持久保存的 per-page 值。它是跨 decode step
+    持久状态模式里的读取侧。
 
     :Math:
         .. math::
 
             Y \leftarrow X
 
-        (a format/layout copy ``PAGED`` → ``RAGGED``; no arithmetic).
-    :__init__: ``Load()`` — no arguments.
-    :__call__: ``y = op(x, ctx=ctx)`` — ``x`` ``[S, D_0, D_1]`` (``PAGED``);
-        returns a freshly-allocated ``RAGGED`` view of the same inner shape.
-    :Note: read side of the persistent-state pattern (see :class:`Save`).
+        这是格式/布局拷贝：``PAGED`` -> ``RAGGED``，不做数学运算。
+    :__init__: ``Load()``；不需要参数。
+    :__call__: ``y = op(x, ctx=ctx)``；``x`` 是 ``[S, D_0, D_1]``（``PAGED``），
+        返回一个内部形状相同、但格式为 ``RAGGED`` 的新视图。
+    :Note: 持久状态模式里的读取侧，见 :class:`Save`。
     """
 
-    # Dispatch table keyed by x_format -> resolved output format.
+    # 按 x_format 分发到对应的输出格式。
     _impl_map: Dict[FORMAT, FORMAT] = {
         FORMAT.PAGED: FORMAT.RAGGED,
-        # Add more entries if you support other formats.
+        # 如果以后支持其他格式，在这里继续加。
     }
 
     def __init__(self):
@@ -124,18 +121,18 @@ class Load(vOp):
         self.output_buffer: Optional[torch.Tensor] = None
         self.schedule = Schedule.W
 
-    # ---------------- profile ----------------
+    # ---------------- profile 阶段 ----------------
     def profile(self, x: vTensor, ctx: Context) -> vTensor:
-        r"""Trace-time: validate ``x`` ``[S, D_0, D_1]``, register the op, and
-        return a freshly-allocated ``vTensor`` view of the loaded value (same
-        inner shape, ``RAGGED``)."""
+        r"""trace 阶段：校验 ``x`` ``[S, D_0, D_1]``，注册这个算子，并返回
+        一个新分配的输出 ``vTensor`` 视图。输出内部形状相同，格式为
+        ``RAGGED``。"""
         prefix = self._prefix()
 
-        # Type & rank checks
+        # 类型和维度数量检查
         assert isinstance(x, vTensor), f"{prefix}profile expects x to be vTensor, got {type(x)}"
         assert x.dim() == 3, f"{prefix}expected 3D x [S, D0, D1], got {tuple(x.shape)}"
 
-        # Dispatch by x format
+        # 根据 x 的格式分发
         x_fmt = x._format
         assert x_fmt in self._impl_map, (
             f"{prefix}no implementation for x_fmt={x_fmt}. "
@@ -143,8 +140,8 @@ class Load(vOp):
         )
         self.output_format = self._impl_map[x_fmt]
 
-        # Pure-metadata vTensor with a fresh tensor_id, mirroring the
-        # Softmax pattern so the compiler graph can track the buffer.
+        # 纯元数据 vTensor，带一个新的 tensor_id。这里和 Softmax 的模式一致，
+        # 方便 compiler graph 跟踪这个 buffer。
         D0, D1 = x.shape[1], x.shape[2]
         self.output_buffer = vTensor(
             shape=(0, D0, D1),
@@ -154,7 +151,7 @@ class Load(vOp):
             tensor_id=len(ctx.tensor_list),
         )
 
-        # Track in the context graph (same convention as Softmax / Conv1d).
+        # 在上下文里记录图结构，和 Softmax / Conv1d 的约定一致。
         ctx.tensor_list.append(self.output_buffer)
         ctx.output_tensor_to_op_list.append(len(ctx.op_list))
         ctx.op_list.append(self)

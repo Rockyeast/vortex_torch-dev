@@ -9,24 +9,24 @@ from .flow import vFlow
 from .registry import RegistryError, get as reg_get, list_keys
 
 class FlowLoadError(Exception):
-    """Errors while loading/exec user modules or resolving classes."""
+    """加载/执行用户模块或解析 flow 类时的错误。"""
     ...
 
 class FlowInitError(Exception):
-    """Errors while validating or constructing the flow instance."""
+    """校验构造参数或创建 flow 实例时的错误。"""
     ...
 
 def _load_module_from_file(file_path: str) -> types.ModuleType:
     """
-    Optionally execute a user file so that its internal @register(...) calls
-    are performed and classes become available in the global registry.
+    执行用户文件，让文件内部的 @register(...) 调用生效。
 
-    This does NOT return a class; it only ensures side effects (registration).
+    这个函数不返回 flow 类；它只确保用户文件被执行，从而产生“注册类”
+    这个副作用。
     """
     if not os.path.isfile(file_path):
         raise FlowLoadError(f"File does not exist: {file_path}")
 
-    # Use a random module name to avoid name clashes and caching issues.
+    # 使用随机模块名，避免和已有模块重名，也避免 import 缓存带来的问题。
     mod_name = f"user_flow_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(mod_name, file_path)
     if spec is None or spec.loader is None:
@@ -34,8 +34,8 @@ def _load_module_from_file(file_path: str) -> types.ModuleType:
 
     module = importlib.util.module_from_spec(spec)
     try:
-        # Execute the module; user code at top-level will run here.
-        # Any @register(...) decorators inside will populate the registry.
+        # 执行模块；用户文件顶层代码会在这里运行。
+        # 文件里的任何 @register(...) 装饰器都会把类写入全局注册表。
         spec.loader.exec_module(module)
     except Exception as e:
         raise FlowLoadError(f"Failed to import user module: {e}") from e
@@ -44,12 +44,13 @@ def _load_module_from_file(file_path: str) -> types.ModuleType:
 
 def _validate_kwargs(cls: type, init_kwargs: Dict[str, Any]) -> None:
     """
-    Validate constructor arguments against the class __init__ signature
-    before actually instantiating, to produce clearer error messages.
+    在真正实例化前，根据类的 __init__ 签名校验构造参数。
+
+    这样参数传错时，能给出更清楚的错误信息。
     """
     sig = inspect.signature(cls.__init__)
     try:
-        # First positional param is 'self'; bind with a dummy value.
+        # 第一个位置参数是 self；这里用一个占位值先绑定。
         sig.bind_partial(None, **(init_kwargs or {}))
     except TypeError as e:
         raise FlowInitError(f"Constructor arguments mismatch: {e}") from e
@@ -60,23 +61,23 @@ def build_vflow(
     user_file: Optional[str] = None
 ) -> vFlow:
     """
-    Build a vFlow instance from a previously registered class.
+    根据已经注册过的类创建一个 vFlow 实例。
 
-    Args:
-        selected: Registration key identifying which subclass to instantiate.
-        init_kwargs: Dict of constructor kwargs for the subclass.
-        user_file: Optional absolute path to a user file to execute first,
-                   so that any new registrations inside it take effect.
+    参数:
+        selected: 注册名，用来决定要实例化哪个子类。
+        init_kwargs: 传给子类构造函数的关键字参数字典。
+        user_file: 可选的用户文件绝对路径。若提供，会先执行这个文件，
+                   让文件内部的新注册生效。
 
-    Behavior:
-        - If user_file is provided, it will be executed (imported) to trigger
-          any @register(...) calls inside the file.
-        - Then we fetch the class from the global registry by 'selected'.
-        - We validate constructor kwargs and instantiate the class.
+    行为:
+        - 如果提供了 user_file，先执行/导入该文件，触发里面的
+          @register(...) 调用。
+        - 然后根据 selected 从全局注册表里取出对应类。
+        - 校验构造函数参数，并实例化该类。
 
-    Raises:
-        FlowLoadError: When file import fails or selected key is missing.
-        FlowInitError: When constructor validation/instantiation fails.
+    抛出:
+        FlowLoadError: 用户文件导入失败，或 selected 对应的注册名不存在。
+        FlowInitError: 构造参数校验失败，或实例化失败。
     """
     if user_file:
         _load_module_from_file(user_file)
@@ -84,7 +85,7 @@ def build_vflow(
     try:
         FlowCls = reg_get(selected)
     except RegistryError as e:
-        # Include available keys in the error message for better UX.
+        # 把当前可用注册名也放进错误信息里，方便用户排查。
         raise FlowLoadError(f"{e} (available: {list_keys()})")
 
     _validate_kwargs(FlowCls, init_kwargs or {})

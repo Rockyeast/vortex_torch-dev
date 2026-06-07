@@ -11,50 +11,48 @@ from .metadata import MetaData
 
 
 class Context(ContextBase):
-    """Static, single-instance indexer context.
+    """静态、单实例的 indexer 上下文。
 
-    Holds **only** configuration that's fixed for the lifetime of the
-    compiled indexer — shapes, page/block sizes, head counts, allocation
-    budgets, codegen scratch (op/tensor lists), backend identity, …
+    这里只保存编译后 indexer 生命周期内固定不变的配置：形状、page/block 大小、
+    head 数、分配预算、codegen 草稿纸（op/tensor 列表）、backend 身份等。
 
-    Per-forward-batch buffers (winfo_*, dense/sparse_kv_indptr+indices,
-    dense/sparse_seqlens, dense/sparse_block_tables, kv_last_page_len)
-    and ``batch_size`` live on a separate :class:`MetaData` object,
-    pre-allocated at attention-backend ``__init__`` and exposed as
-    ``ctx.metadata``. Codegen emits ``ctx.metadata.<field>`` for any
-    value that varies between forward batches.
+    每个 forward batch 会变化的 buffer（winfo_*、dense/sparse_kv_indptr+indices、
+    dense/sparse_seqlens、dense/sparse_block_tables、kv_last_page_len）以及
+    ``batch_size`` 放在单独的 :class:`MetaData` 对象里。这个对象会在
+    attention-backend 的 ``__init__`` 阶段预分配，并通过 ``ctx.metadata`` 暴露。
+    codegen 遇到每个 batch 都会变化的值时，会生成 ``ctx.metadata.<field>``。
 
-    Build pattern (from each attention backend's ``_compile``):
+    构建模式（来自各 attention backend 的 ``_compile``）:
         ctx = Context()
-        ctx.create(self, model_runner)              # static fields
+        ctx.create(self, model_runner)              # 静态字段
         ctx.metadata = MetaData.preallocate(ctx, device=...)
     """
 
     __slots__ = ContextBase.__slots__ + (
-        # ---- per-forward-batch state (pre-allocated MetaData) ----
+        # ---- 每个 forward batch 的状态（预分配 MetaData）----
         "metadata",
-        # ---- batch budget ----
+        # ---- batch 预算 ----
         "max_bs",
-        # ---- active attention backend ----
-        # "flashinfer" (CSR indices, default) or "trtllm" (2D block_tables).
-        # Set by Context.create() from server_args.vortex_attention_backend;
-        # consumed by the indexer compiler's IndexerBackend traits.
+        # ---- 当前 attention backend ----
+        # "flashinfer"（CSR indices，默认）或 "trtllm"（2D block_tables）。
+        # 由 Context.create() 从 server_args.vortex_attention_backend 设置；
+        # indexer compiler 的 IndexerBackend traits 会使用它。
         "vortex_attention_backend",
-        # ---- workload-scheduler shape ----
+        # ---- workload scheduler 形状 ----
         "max_num_workloads",
         "workload_chunk_size",
         # ---- head / shape ----
         "group_size", "num_kv_heads", "num_qo_heads", "head_dim",
-        # ---- hardware / paging ----
+        # ---- 硬件 / paging ----
         "num_sms", "page_size", "max_num_pages", "max_num_pages_per_request",
         "block_size", "max_num_blocks", "max_num_blocks_per_request",
         "num_blocks_per_page", "num_pages_per_workload",
-        # ---- topk / reserved-slot policy ----
+        # ---- topk / 预留槽策略 ----
         "topk_val", "topk_ratio", "block_reserved_bos", "block_reserved_eos",
         "max_topk_val",
-        # ---- auxiliary accounting ----
+        # ---- 辅助资源统计 ----
         "_aux_total_bytes", "_aux_total_flops",
-        # ---- codegen / graph scratch ----
+        # ---- codegen / graph 草稿纸 ----
         "tensor_list", "op_list", "output_tensor_to_op_list",
         "op_to_input_tensor_list", "op_to_output_tensor_list",
         "side_effect_op_ids",
@@ -62,14 +60,14 @@ class Context(ContextBase):
         "query_arg_names",
         "compilation_header_lines", "auxilary_func_def_lines",
         "compilation_cache_dir",
-        # ---- tensor-core (bf16-compute) codegen toggle ----
-        # When True, the triton W-kernel keeps compute blocks in bf16
-        # (loads cast to bf16, accumulations promote to fp32) and emits
-        # ``tl.dot`` for MMA-friendly GeMMs. Triton-impl only.
+        # ---- tensor-core（bf16 compute）codegen 开关 ----
+        # 为 True 时，triton W-kernel 会把计算块保持为 bf16
+        # （load 转 bf16，累加提升到 fp32），并为适合 MMA 的 GeMM 生成 ``tl.dot``。
+        # 只支持 Triton 实现。
         "use_tensor_core",
     )
 
-    # ---- type hints (declarations only) ----
+    # ---- 类型标注（这里只声明，不赋值）----
     metadata: Optional[MetaData]
     max_bs: int
     vortex_attention_backend: str
@@ -127,19 +125,19 @@ class Context(ContextBase):
                 object.__setattr__(self, name, UNSET)
 
     # ------------------------------------------------------------------
-    # Per-batch convenience accessors — forward to ``self.metadata``.
+    # 每个 batch 的便捷访问器：转发到 ``self.metadata``。
     # ------------------------------------------------------------------
     @property
     def batch_size(self) -> int:
-        """Current batch size — proxied from ``self.metadata``.
+        """当前 batch size，从 ``self.metadata`` 代理读取。
 
-        Kept as a property (not a slot) so the only writable copy lives on
-        ``self.metadata``; ``ctx.batch_size`` is now read-only.
+        这里故意保持为 property，而不是 slot，让唯一可写副本位于
+        ``self.metadata``；``ctx.batch_size`` 现在是只读入口。
         """
         return 0 if self.metadata is None else self.metadata.batch_size
 
     def set_batch_size(self, n: int) -> None:
-        """Compatibility shim — forwards to ``self.metadata.set_batch_size``."""
+        """兼容旧调用的薄封装：转发到 ``self.metadata.set_batch_size``。"""
         if self.metadata is None:
             raise RuntimeError(
                 "Context.set_batch_size called before MetaData was preallocated; "
@@ -149,9 +147,8 @@ class Context(ContextBase):
 
     # ------------------------------------------------------------------
     def create(self, parent: Any, model_runner: Any, *, overwrite: bool = False) -> "Context":
-        """Populate the static fields. Per-batch ``MetaData`` is allocated
-        separately by the caller via ``MetaData.preallocate(ctx, device=...)``
-        — see this class's docstring.
+        """填充静态字段。每个 batch 的 ``MetaData`` 由调用方通过
+        ``MetaData.preallocate(ctx, device=...)`` 单独分配；见本类 docstring。
         """
         if self._created and not overwrite:
             raise RuntimeError("Context.create() already called; pass overwrite=True to reinitialize.")
@@ -178,28 +175,25 @@ class Context(ContextBase):
         self.num_blocks_per_page = self.page_size // self.block_size
         assert self.page_size % self.block_size == 0, "Page size must be a multiple of block size."
         assert self.workload_chunk_size % self.num_blocks_per_page == 0, "Workload chunk size must be a multiple of blocks per page."
-        # Capacity model (adjust as needed)
+        # 容量模型（如有需要可以调整）
         self.max_num_pages = max_pages_per_req * max_bs * self.num_kv_heads
         self.max_num_pages_per_request = max_pages_per_req
         self.max_num_blocks = self.max_num_pages * self.num_blocks_per_page
         self.max_num_blocks_per_request = self.max_num_pages_per_request * self.num_blocks_per_page
         self.num_pages_per_workload = self.workload_chunk_size // self.num_blocks_per_page
 
-        # Round trtllm's dense_block_tables row stride up to a multiple
-        # of 4 int32s (= 128 bits). Each row of ``dense_block_tables`` is
-        # ``max_num_blocks_per_request`` int32s wide, and the trtllm
-        # indexer kernel reads
-        # ``indices[pid * max_blocks_per_seq + p * nbp]`` starting at
-        # ``pid * max_blocks_per_seq`` — making that product 16-byte
-        # aligned for every ``pid`` lets the int32 loads coalesce into
-        # 128-bit LDG.E.128 cache-line-aligned transactions on the per-
-        # row index sweep, and is harmless on flashinfer where the CSR
-        # indices array doesn't carry a per-row stride at all.
-        # ``p < _page`` already gates the kernel's index reads against
-        # the actual sequence length, so the extra padding entries are
-        # never read (the planner just doesn't write to them).
-        # NB: ``self.vortex_attention_backend`` is assigned further down
-        # in this method, so read off ``sa`` directly.
+        # 把 trtllm 的 dense_block_tables 行跨度向上取整到 4 个 int32
+        # （也就是 128 bits）的倍数。``dense_block_tables`` 每一行宽度是
+        # ``max_num_blocks_per_request`` 个 int32；trtllm indexer kernel 会从
+        # ``pid * max_blocks_per_seq`` 开始读取
+        # ``indices[pid * max_blocks_per_seq + p * nbp]``。让这个乘积对每个
+        # ``pid`` 都 16-byte 对齐，可以让 int32 load 合并成 128-bit 的
+        # LDG.E.128 cache-line-aligned transaction。对 flashinfer 无害，因为
+        # flashinfer 的 CSR indices 数组没有 per-row stride。
+        # ``p < _page`` 已经会按真实 sequence length 限制 kernel 的 index 读取，
+        # 因此外加的 padding entry 永远不会被读到（planner 也不会写它们）。
+        # 注意：``self.vortex_attention_backend`` 在本方法更靠后才赋值，所以这里
+        # 直接从 ``sa`` 读取。
         _attn_backend = (
             getattr(sa, "vortex_attention_backend", "flashinfer") or "flashinfer"
         )
@@ -228,24 +222,22 @@ class Context(ContextBase):
         self.op_to_output_tensor_list = []
         self.side_effect_op_ids = []
         self.tensor_id_to_tensor_name_map = {}
-        # Query argument name(s) for the generated ``forward(...)`` entry point.
-        # MHA flows pass a single ``q``; MLA flows pass the absorbed pair
-        # ``q_nope_out``/``q_pe`` and set this to ["q_nope_out", "q_pe"].
+        # 生成的 ``forward(...)`` 入口使用的 query 参数名。
+        # MHA flow 只传一个 ``q``；MLA flow 会传吸收后的
+        # ``q_nope_out`` / ``q_pe``，并把这里设置成 ["q_nope_out", "q_pe"]。
         self.query_arg_names = ["q"]
         self.compilation_header_lines = []
         self.auxilary_func_def_lines = []
         self.compilation_cache_dir = sa.vortex_compilation_cache_dir
-        self.sparse_attention_name = parent.sparse_attention.__class__.__name__.lower() + f"_{uuid.uuid4().hex[:8]}"  # unique name for this attention instance
+        self.sparse_attention_name = parent.sparse_attention.__class__.__name__.lower() + f"_{uuid.uuid4().hex[:8]}"  # 当前 attention 实例的唯一名字
         self.impl_backend = getattr(sa, "vortex_impl_backend", "triton") or "triton"
         self.vortex_attention_backend = getattr(
             sa, "vortex_attention_backend", "flashinfer"
         ) or "flashinfer"
         self.use_tensor_core = bool(getattr(sa, "vortex_use_tensor_core", False))
-        # Tensor-core (bf16-compute + tl.dot) codegen is implemented only
-        # in the triton W-kernel backend. The cuda backend has its own
-        # fp32-accumulation path and ignores this flag — reject the
-        # combination explicitly so a misconfigured run fails loudly
-        # instead of silently running fp32.
+        # Tensor-core（bf16-compute + tl.dot）codegen 目前只在 triton W-kernel
+        # backend 里实现。cuda backend 有自己的 fp32 累加路径，并且会忽略这个
+        # flag；这里显式拒绝这种组合，让配置错误时直接报错，而不是静默跑 fp32。
         if self.use_tensor_core and self.impl_backend != "triton":
             raise ValueError(
                 "vortex_use_tensor_core is only supported with "
@@ -255,7 +247,7 @@ class Context(ContextBase):
         return self
 
 
-# Module-level singleton (part of the public package API)
+# 模块级单例，是公开 package API 的一部分。
 ctx: Final[Context] = Context()
 
 

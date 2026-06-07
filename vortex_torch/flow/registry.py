@@ -3,18 +3,19 @@ from typing import Dict, Type, Union
 from .flow import vFlow
 from .flow_mla import vFlowMLA
 
-# Global registry: key -> subclass of vFlow (MHA) or vFlowMLA (latent attention)
+# 全局注册表：注册名 -> vFlow 子类（普通 MHA）或 vFlowMLA 子类（latent attention）
 _FlowBase = (vFlow, vFlowMLA)
 _REGISTRY: Dict[str, Type[Union[vFlow, vFlowMLA]]] = {}
 
 class RegistryError(Exception):
-    """Errors related to class registration and lookup."""
+    """注册类或查找注册名时的错误。"""
     ...
 
 def register(name: str):
     """
-    Decorator used by users to register their vFlow subclasses.
-    Example:
+    用户用这个装饰器注册自己的 vFlow / vFlowMLA 子类。
+
+    示例:
         @register("cls_a")
         class MyFlow(vFlow): ...
     """
@@ -28,16 +29,16 @@ def register(name: str):
     return deco
 
 def get(name: str) -> Type[vFlow]:
-    """Return the registered class for a given name, or raise if not found."""
+    """根据注册名返回对应类；如果找不到则抛出异常。"""
     try:
         return _REGISTRY[name]
     except KeyError:
         raise RegistryError(f"Registration name '{name}' not found")
 
 def has(name: str) -> bool:
-    """Check whether a name is registered."""
+    """检查某个名字是否已经注册。"""
     return name in _REGISTRY
 
 def list_keys():
-    """List all registered names."""
+    """列出所有已注册的名字。"""
     return list(_REGISTRY.keys())

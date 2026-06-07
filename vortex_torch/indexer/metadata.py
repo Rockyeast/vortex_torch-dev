@@ -1,34 +1,31 @@
-"""Per-forward-batch metadata for the indexer.
+"""indexer 每个 forward batch 的运行时 metadata。
 
-The :class:`MetaData` object owns every tensor / scalar whose value depends
-on the *current* forward batch — what the planner writes during
-``init_forward_metadata`` and what the compiled indexer kernels read on
-the hot path. It is *separate* from :class:`Context`, which holds purely
-static configuration (page/block sizes, head counts, allocation budgets,
-graph metadata, codegen scratch).
+:class:`MetaData` 对象持有所有依赖 *当前* forward batch 的 tensor / 标量：
+planner 在 ``init_forward_metadata`` 期间写入这些字段，编译后的 indexer kernel
+在热路径上读取这些字段。它和 :class:`Context` 是分开的；:class:`Context`
+只保存静态配置，例如 page/block 大小、head 数、分配预算、graph metadata、
+codegen 草稿纸等。
 
-Pre-allocation is done once at attention-backend ``__init__`` via
-:func:`MetaData.preallocate` — the same buffer objects are reused across
-every forward batch (CUDA-graph friendly: pointers never move, only the
-contents change).
+预分配通过 :func:`MetaData.preallocate` 在 attention-backend ``__init__`` 阶段
+执行一次。之后每个 forward batch 都复用同一批 buffer 对象
+（CUDA graph 友好：指针地址不变，只改内容）。
 
-Layout summary:
+布局摘要：
 
-  * ``winfo_*`` — workload-scheduler outputs (per-workload, length
-    ``ctx.max_num_workloads``).
-  * ``dense_kv_indptr`` / ``sparse_kv_indptr`` — CSR prefix sums
-    (length ``max_bs * num_kv_heads + 1``). ``None`` in trtllm mode.
-  * ``dense_kv_indices`` / ``sparse_kv_indices`` — flat CSR block ids
-    (length ``max_bs * num_kv_heads * max_blocks_per_seq``). ``None`` in
-    trtllm mode.
-  * ``dense_seqlens`` / ``sparse_seqlens`` — per-row token counts
-    (length ``max_bs * num_kv_heads``). ``None`` in flashinfer mode.
-  * ``dense_block_tables`` / ``sparse_block_tables`` —
-    ``[max_bs * num_kv_heads, max_blocks_per_seq]`` block ids. ``None``
-    in flashinfer mode.
-  * ``kv_last_page_len`` — per-row last-page token count
-    (length ``max_bs * num_kv_heads``).
-  * ``batch_size`` — current request count (set by every planner call).
+  * ``winfo_*``：workload scheduler 的输出；per-workload，长度为
+    ``ctx.max_num_workloads``。
+  * ``dense_kv_indptr`` / ``sparse_kv_indptr``：CSR 前缀和，长度为
+    ``max_bs * num_kv_heads + 1``。trtllm 模式下为 ``None``。
+  * ``dense_kv_indices`` / ``sparse_kv_indices``：扁平 CSR block id，长度为
+    ``max_bs * num_kv_heads * max_blocks_per_seq``。trtllm 模式下为 ``None``。
+  * ``dense_seqlens`` / ``sparse_seqlens``：每行 token 数，长度为
+    ``max_bs * num_kv_heads``。flashinfer 模式下为 ``None``。
+  * ``dense_block_tables`` / ``sparse_block_tables``：
+    ``[max_bs * num_kv_heads, max_blocks_per_seq]`` 形状的 block id 表。
+    flashinfer 模式下为 ``None``。
+  * ``kv_last_page_len``：每行最后一个 page 的 token 数，长度为
+    ``max_bs * num_kv_heads``。
+  * ``batch_size``：当前请求数量，由每次 planner 调用设置。
 """
 from __future__ import annotations
 
@@ -41,32 +38,32 @@ if TYPE_CHECKING:
 
 
 class MetaData:
-    """Per-forward-batch state for the indexer. See module docstring."""
+    """indexer 的每个 forward batch 状态。详见模块 docstring。"""
 
     __slots__ = (
-        # workload scheduler outputs
+        # workload scheduler 输出
         "winfo_q_indices",
         "winfo_is_first_workload_per_batch",
         "winfo_kv_offsets",
         "winfo_kv_lens",
         "winfo_num_workloads",
         "winfo_chunk_size",
-        # CSR (flashinfer) buffers — None when backend == "trtllm"
+        # CSR（flashinfer）buffer；backend == "trtllm" 时为 None
         "dense_kv_indptr",
         "sparse_kv_indptr",
         "dense_kv_indices",
         "sparse_kv_indices",
-        # block-table (trtllm) buffers — None when backend == "flashinfer"
+        # block-table（trtllm）buffer；backend == "flashinfer" 时为 None
         "dense_seqlens",
         "sparse_seqlens",
         "dense_block_tables",
         "sparse_block_tables",
-        # both backends
+        # 两种 backend 都会使用
         "kv_last_page_len",
         "batch_size",
     )
 
-    # Type hints (informational only; values populated by ``preallocate``).
+    # 类型标注（只提供信息；具体值由 ``preallocate`` 填充）。
     winfo_q_indices: torch.Tensor
     winfo_is_first_workload_per_batch: torch.Tensor
     winfo_kv_offsets: torch.Tensor
@@ -94,7 +91,7 @@ class MetaData:
             )
 
     # ------------------------------------------------------------------
-    # Pre-allocation entry points (one per attention backend)
+    # 预分配入口（按 attention backend 选择具体 buffer 集合）
     # ------------------------------------------------------------------
     @classmethod
     def preallocate(
@@ -103,17 +100,16 @@ class MetaData:
         *,
         device: torch.device | str,
     ) -> "MetaData":
-        """Build a backend-appropriate ``MetaData`` from a populated
-        :class:`Context`.
+        """根据已经填好的 :class:`Context` 构建适配当前 backend 的 ``MetaData``。
 
-        Picks the buffer set from ``ctx.vortex_attention_backend``:
-          * ``"flashinfer"`` → allocates CSR buffers
-            (``dense/sparse_kv_indptr``, ``dense/sparse_kv_indices``);
-            leaves block-table buffers as ``None``.
-          * ``"trtllm"``     → allocates 2D block_tables + per-row seqlens;
-            leaves CSR buffers as ``None``.
+        根据 ``ctx.vortex_attention_backend`` 选择 buffer 集合：
+          * ``"flashinfer"`` -> 分配 CSR buffer
+            （``dense/sparse_kv_indptr``、``dense/sparse_kv_indices``）；
+            block-table buffer 保持为 ``None``。
+          * ``"trtllm"`` -> 分配 2D block_tables 和 per-row seqlens；
+            CSR buffer 保持为 ``None``。
 
-        ``winfo_*`` and ``kv_last_page_len`` are always allocated.
+        ``winfo_*`` 和 ``kv_last_page_len`` 总是会分配。
         """
         md = cls()
         md._alloc_common(ctx, device=device)
@@ -151,14 +147,14 @@ class MetaData:
         self.winfo_num_workloads = torch.zeros((1,), dtype=i32, device=device)
         self.winfo_chunk_size = torch.zeros((1,), dtype=i32, device=device)
 
-        # Every backend's planner writes the per-row last-block (token) length.
+        # 每种 backend 的 planner 都会写每行最后一个 page/block 的 token 长度。
         self.kv_last_page_len = torch.ones((eff_bs,), dtype=i32, device=device)
 
     def _alloc_flashinfer(self, ctx: "Context", *, device) -> None:
         eff_bs = ctx.max_bs * ctx.num_kv_heads
-        # CSR ``kv_indices`` length: one int32 per cached block across the
-        # full request budget. Use ``max_num_blocks`` (already the planner
-        # allocation budget) for parity with the prior backend wiring.
+        # CSR ``kv_indices`` 长度：完整请求预算内，每个 cached block 对应一个
+        # int32。这里使用 ``max_num_blocks``，它已经是 planner 的分配预算，
+        # 也和之前的 backend wiring 保持一致。
         indices_len = ctx.max_num_blocks
         i32 = torch.int32
 
@@ -166,7 +162,7 @@ class MetaData:
         self.sparse_kv_indptr = torch.zeros((eff_bs + 1,), dtype=i32, device=device)
         self.dense_kv_indices = torch.zeros((indices_len,), dtype=i32, device=device)
         self.sparse_kv_indices = torch.zeros((indices_len,), dtype=i32, device=device)
-        # block-table buffers stay ``None`` in flashinfer mode.
+        # flashinfer 模式下，block-table buffer 保持为 ``None``。
 
     def _alloc_trtllm(self, ctx: "Context", *, device) -> None:
         eff_bs = ctx.max_bs * ctx.num_kv_heads
@@ -181,7 +177,7 @@ class MetaData:
         self.sparse_block_tables = torch.zeros(
             (eff_bs, max_blocks_per_seq), dtype=i32, device=device,
         )
-        # CSR buffers stay ``None`` in trtllm mode.
+        # trtllm 模式下，CSR buffer 保持为 ``None``。
 
     # ------------------------------------------------------------------
     def set_batch_size(self, n: int) -> None:

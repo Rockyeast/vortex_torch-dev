@@ -1,0 +1,2251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vortex_torch v0.5 架构可视化</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --band: #151922;
+    --band-2: #1b202b;
+    --line: #313947;
+    --line-soft: #252c38;
+    --text: #e7ebf0;
+    --muted: #9aa6b4;
+    --dim: #6f7a88;
+    --blue: #6ea8fe;
+    --teal: #56d6bf;
+    --green: #85d66f;
+    --amber: #f1b95b;
+    --rose: #ef7a8a;
+    --violet: #b79cff;
+    --code: #10141c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(15, 17, 21, 0.96);
+    backdrop-filter: blur(10px);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
+  .sub {
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  nav {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .tab {
+    border: 1px solid var(--line);
+    background: #121722;
+    color: var(--muted);
+    padding: 7px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .tab.active {
+    color: #fff;
+    border-color: var(--blue);
+    background: #1a2a43;
+  }
+
+  main { padding: 22px 24px 32px; }
+
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  .band {
+    border: 1px solid var(--line);
+    background: var(--band);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+
+  .band h2 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    letter-spacing: 0;
+  }
+
+  .band h3 {
+    margin: 14px 0 8px;
+    font-size: 13px;
+    color: #fff;
+  }
+
+  .lead {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 12px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  .unit {
+    border: 1px solid var(--line-soft);
+    background: var(--band-2);
+    border-radius: 8px;
+    padding: 12px;
+    min-height: 106px;
+  }
+
+  .unit strong {
+    display: block;
+    font-size: 13px;
+    color: #fff;
+    margin-bottom: 5px;
+  }
+
+  .unit p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 6px;
+    margin: 2px 3px 2px 0;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--code);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .tag.blue { color: var(--blue); border-color: rgba(110, 168, 254, .45); }
+  .tag.teal { color: var(--teal); border-color: rgba(86, 214, 191, .45); }
+  .tag.green { color: var(--green); border-color: rgba(133, 214, 111, .45); }
+  .tag.amber { color: var(--amber); border-color: rgba(241, 185, 91, .45); }
+  .tag.rose { color: var(--rose); border-color: rgba(239, 122, 138, .45); }
+  .tag.violet { color: var(--violet); border-color: rgba(183, 156, 255, .45); }
+
+  .pipeline {
+    display: grid;
+    gap: 8px;
+  }
+
+  .stage {
+    display: grid;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 12px;
+    align-items: stretch;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #131821;
+  }
+
+  .stage .label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    font-weight: 700;
+    font-size: 12px;
+    color: #0c1016;
+  }
+
+  .label.user { background: var(--blue); }
+  .label.flow { background: var(--teal); }
+  .label.trace { background: var(--amber); }
+  .label.kernel { background: var(--rose); }
+  .label.runtime { background: var(--green); }
+  .label.mla { background: var(--violet); }
+
+  .stage .body { padding: 10px 12px; }
+  .stage .body b { color: #fff; font-size: 13px; }
+  .stage .body p { color: var(--muted); margin: 4px 0 0; font-size: 12px; }
+
+  .arrow {
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--dim);
+    font-size: 15px;
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .lane {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    background: #111720;
+  }
+
+  .lane-title {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .lane-title b { font-size: 13px; }
+  .lane-title span { font-size: 11px; color: var(--dim); }
+
+  .flowline {
+    display: grid;
+    gap: 8px;
+  }
+
+  .node {
+    border: 1px solid var(--line-soft);
+    border-left-width: 4px;
+    border-radius: 7px;
+    padding: 10px;
+    background: var(--band-2);
+  }
+
+  .node p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .node b { font-size: 12px; }
+  .node.indexer { border-left-color: var(--blue); }
+  .node.cache { border-left-color: var(--teal); }
+  .node.compiler { border-left-color: var(--amber); }
+  .node.backend { border-left-color: var(--green); }
+  .node.kernel { border-left-color: var(--rose); }
+  .node.mla { border-left-color: var(--violet); }
+
+  .matrix {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 150px repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    align-items: stretch;
+  }
+
+  .cell {
+    border: 1px solid var(--line-soft);
+    background: #111720;
+    border-radius: 6px;
+    padding: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .cell.head {
+    background: #1f2633;
+    color: #fff;
+    font-weight: 700;
+  }
+
+  .cell.path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--blue);
+  }
+
+  .shape-board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .shape {
+    min-height: 118px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #121821;
+    padding: 12px;
+  }
+
+  .shape code {
+    display: block;
+    color: #fff;
+    background: var(--code);
+    border: 1px solid var(--line-soft);
+    padding: 7px;
+    border-radius: 6px;
+    margin: 8px 0;
+    font-size: 12px;
+    white-space: normal;
+  }
+
+  .shape p { color: var(--muted); font-size: 12px; margin: 0; }
+
+  .svg-wrap {
+    border: 1px solid var(--line);
+    background: #10151e;
+    border-radius: 8px;
+    padding: 10px;
+    overflow-x: auto;
+  }
+
+  svg text {
+    font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    letter-spacing: 0;
+  }
+
+  .file-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .file {
+    display: grid;
+    grid-template-columns: 245px minmax(0, 1fr);
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 7px;
+    background: #111720;
+    font-size: 12px;
+  }
+
+  .file code {
+    color: var(--blue);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .file span { color: var(--muted); }
+
+  .note {
+    border-left: 3px solid var(--amber);
+    padding: 9px 12px;
+    background: #19170f;
+    color: #d9c79e;
+    border-radius: 0 7px 7px 0;
+    font-size: 12px;
+    margin-top: 12px;
+  }
+
+  .status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .pill {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 5px 9px;
+    font-size: 12px;
+    color: var(--muted);
+    background: #111720;
+  }
+
+  .mini-title {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 10px 0 6px;
+  }
+
+  .code-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 14px;
+  }
+
+  .code-tab {
+    border: 1px solid var(--line);
+    background: #121722;
+    color: var(--muted);
+    padding: 7px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .code-tab.active {
+    color: #fff;
+    border-color: var(--teal);
+    background: #17322f;
+  }
+
+  .code-panel { display: none; }
+  .code-panel.active { display: block; }
+
+  .read-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .read-step {
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #111720;
+    padding: 12px;
+    min-height: 118px;
+  }
+
+  .read-step b {
+    display: block;
+    color: #fff;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+
+  .read-step p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .strategy-table {
+    display: grid;
+    gap: 7px;
+    margin-top: 10px;
+  }
+
+  .strategy-row {
+    display: grid;
+    grid-template-columns: 210px repeat(4, minmax(0, 1fr));
+    gap: 7px;
+    align-items: stretch;
+  }
+
+  .strategy-row > div {
+    border: 1px solid var(--line-soft);
+    border-radius: 7px;
+    background: #111720;
+    padding: 9px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .strategy-row .head {
+    background: #1f2633;
+    color: #fff;
+    font-weight: 700;
+  }
+
+  .strategy-row code {
+    color: var(--blue);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .strategy-viz-tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 10px 0 12px;
+  }
+
+  .strategy-viz-tab {
+    border: 1px solid var(--line);
+    background: #121722;
+    color: var(--muted);
+    padding: 6px 9px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .strategy-viz-tab.active {
+    color: #fff;
+    border-color: var(--teal);
+    background: #17322f;
+  }
+
+  .strategy-viz-panel { display: none; }
+  .strategy-viz-panel.active { display: block; }
+
+  .diagram-note {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .study-status {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .study-status .unit { min-height: 92px; }
+
+  .study-map {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(130px, 1fr));
+    gap: 10px;
+  }
+
+  .study-card {
+    position: relative;
+    min-height: 126px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--band-2);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .study-card::after {
+    content: "→";
+    position: absolute;
+    right: -11px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--dim);
+    font-weight: 700;
+  }
+
+  .study-card:last-child::after { display: none; }
+
+  .study-card strong {
+    display: block;
+    margin-bottom: 6px;
+    color: #fff;
+    font-size: 13px;
+  }
+
+  .study-card span {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .study-card.active,
+  .study-card:hover {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(110, 168, 254, .16);
+  }
+
+  .study-detail {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--band);
+    padding: 16px;
+  }
+
+  .study-detail h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+  }
+
+  .study-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, .95fr) minmax(320px, 1.05fr);
+    gap: 14px;
+    align-items: start;
+  }
+
+  .study-relation-wrap {
+    overflow-x: auto;
+    margin-top: 12px;
+  }
+
+  .study-relation {
+    position: relative;
+    min-width: 780px;
+    height: 350px;
+  }
+
+  .study-relation svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  .study-file-node {
+    position: absolute;
+    min-height: 62px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #121722;
+    color: var(--text);
+    text-align: center;
+    cursor: pointer;
+  }
+
+  .study-file-node:hover,
+  .study-file-node.active {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px rgba(86, 214, 191, .14);
+  }
+
+  .study-file-node strong {
+    display: block;
+    color: #fff;
+    font-size: 12px;
+  }
+
+  .study-file-node small {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.25;
+  }
+
+  .study-function-flow {
+    display: grid;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .study-function-step {
+    display: grid;
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 10px;
+    align-items: stretch;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #121722;
+  }
+
+  .study-function-step b {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    color: #10141c;
+    background: var(--amber);
+    font-size: 12px;
+  }
+
+  .study-function-step p {
+    margin: 0;
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  @media (max-width: 1020px) {
+    header { grid-template-columns: 1fr; }
+    nav { justify-content: flex-start; }
+    .layout, .split, .study-detail-grid { grid-template-columns: 1fr; }
+    .grid, .grid.two, .grid.three, .shape-board, .read-steps, .study-map, .study-status { grid-template-columns: 1fr; }
+    .row, .strategy-row { grid-template-columns: 1fr; }
+    .file { grid-template-columns: 1fr; }
+    .study-card::after { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>vortex_torch v0.5 架构可视化</h1>
+    <div class="sub">基于当前仓库 /home/rockyeast/vortex_torch，分支 v0.5，核心提交 d4da8f9</div>
+  </div>
+  <nav>
+    <button class="tab active" data-page="overview">先看这里</button>
+    <button class="tab" data-page="runtime">生成一步</button>
+    <button class="tab" data-page="flowapi">怎么写策略</button>
+    <button class="tab" data-page="algos">内置策略</button>
+    <button class="tab" data-page="compiler">为什么要编译</button>
+    <button class="tab" data-page="codewalk">代码理解</button>
+    <button class="tab" data-page="studymap">学习地图</button>
+    <button class="tab" data-page="files">源码入口</button>
+  </nav>
+</header>
+
+<main>
+  <section id="overview" class="page active">
+    <div class="layout">
+      <div>
+        <div class="band">
+          <h2>这个项目在解决什么问题</h2>
+          <p class="lead">大模型每生成一个新 token，都要回头看前面的历史。历史越长，看一遍越慢。vortex_torch 做的事是：先把历史切成很多块，再快速挑出最值得看的块，让注意力计算少看一点历史、跑得更快。</p>
+          <div class="pipeline">
+            <div class="stage">
+              <div class="label user">你写规则</div>
+              <div class="body"><b>“哪些历史块重要？”</b><p>源码名：`vFlow / vFlowMLA`。你写一个策略，告诉框架怎么给历史块打分、怎么挑块。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label flow">拆成步骤</div>
+              <div class="body"><b>求平均、算相似度、取前 K 个</b><p>源码里会看到 `Mean / GeMM / Max / topK`。它们就是可追踪的小步骤。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label trace">记成图</div>
+              <div class="body"><b>把 Python 写法变成计算流程图</b><p>源码名：`trace -> graph`。先不真的算，只记录“第一步做什么、第二步做什么”。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label kernel">变快</div>
+              <div class="body"><b>生成 GPU 上跑的高速代码</b><p>源码名：`Triton / CUDA / custom_ops`。推理时不能慢慢跑 Python，所以要编译。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label runtime">真正生成</div>
+              <div class="body"><b>用挑出来的历史块做 attention</b><p>源码名：`FlashInfer / TRT-LLM / MLA`。这些后端负责真正的注意力计算。</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>先记住这几个词</h2>
+          <div class="grid two">
+            <div class="unit"><strong>token</strong><p>模型一次生成或读取的小单位。中文里可能是一个字、一个词片段，英文里可能是半个词。</p></div>
+            <div class="unit"><strong>K/V cache</strong><p>历史内容的缓存。模型后面生成新 token 时，会反复回头看这里。</p></div>
+            <div class="unit"><strong>block / page</strong><p>把历史按块整理。Vortex 主要按 block 选择“哪些历史值得看”。</p></div>
+            <div class="unit"><strong>sparse attention</strong><p>不看全部历史，只看一部分重要历史。这里的 sparse 就是“稀疏地看”。</p></div>
+          </div>
+        </div>
+      </div>
+
+      <aside>
+        <div class="band">
+          <h2>白话对照表</h2>
+          <div class="status">
+            <span class="pill">flow: 你写的选块策略</span>
+            <span class="pill">indexer: 挑历史块的工具</span>
+            <span class="pill">cache: 存历史和历史摘要</span>
+            <span class="pill">compiler: 把策略变成快代码</span>
+            <span class="pill">custom_ops: 已写好的高速小工具</span>
+            <span class="pill">engine/sgl: 接到 SGLang 里运行</span>
+          </div>
+          <div class="mini-title">以后看源码时从这里进</div>
+          <div class="file-list">
+            <div class="file"><code>vortex_torch/flow/algorithms.py</code><span>别人已经写好的选块策略，先看这个。</span></div>
+            <div class="file"><code>vortex_torch/flow/flow.py</code><span>策略必须长什么样。</span></div>
+            <div class="file"><code>vortex_torch/indexer/output_func.py</code><span>最后怎么选 topK 块。</span></div>
+            <div class="file"><code>vortex_torch/engine/sgl/api.py</code><span>怎么接到 SGLang 运行。</span></div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>暂时不用深究的形状</h2>
+          <div class="shape-board">
+            <div class="shape"><strong>当前问题</strong><code>q: query</code><p>可以理解成“现在这个新 token 想找什么历史”。</p></div>
+            <div class="shape"><strong>历史摘要</strong><code>cache[x]</code><p>每个历史块提前算好的简短摘要，用来快速打分。</p></div>
+            <div class="shape"><strong>输出结果</strong><code>o: selected blocks</code><p>最后选出来的一批历史块，交给 attention 真正读取。</p></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section id="runtime" class="page">
+    <div class="band">
+      <h2>代码视角：处理当前输入 token，然后预测下一个 token</h2>
+      <div class="split">
+        <div class="lane">
+          <div class="lane-title"><b>先把当前输入 token 写入历史</b><span>源码名：forward_cache</span></div>
+          <div class="flowline">
+            <div class="node backend"><b>当前输入 token 已经确定</b><p>它可能是 prompt 里的 token，也可能是上一轮刚采样出来的 token。</p></div>
+            <div class="node cache"><b>把它的 K/V 写进历史仓库</b><p>源码里是 `set_kv_buffer(...)`。</p></div>
+            <div class="node compiler"><b>调用“更新摘要”的快代码</b><p>源码名：`compiled_cache.forward(...)`。</p></div>
+            <div class="node kernel"><b>刷新这个 token 所在块的摘要</b><p>比如平均特征、最大/最小包络、子块统计、running score。</p></div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-title"><b>再挑历史块，做 attention 预测下一个 token</b><span>源码名：forward_indexer</span></div>
+          <div class="flowline">
+            <div class="node backend"><b>先填写本轮草稿纸</b><p>`plan_decode(...)` 会写入本轮请求长度、历史范围、dense/sparse 输出位置等信息。</p></div>
+            <div class="node indexer"><b>用当前 query 给历史块打分</b><p>query 可以理解成“这一步 attention 正在寻找什么信息”。</p></div>
+            <div class="node compiler"><b>调用“挑块”的快代码</b><p>源码名：`compiled_indexer`，通常最后会做 topK。</p></div>
+            <div class="node kernel"><b>根据选中的块做 attention</b><p>attention 的输出再用于预测下一个 token。</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="note">源码视角更准确：decode forward 处理的是“当前已知输入 token”。本轮草稿纸先由 planner 填好；layer 内先写 KV 并更新仓库摘要，再让 indexer 读仓库、读写草稿纸，最后 attention 用草稿纸上的结果预测下一个 token。</div>
+    </div>
+
+    <div class="band">
+      <h2>运行时组件图</h2>
+      <div class="svg-wrap">
+        <svg width="1040" height="500" viewBox="0 0 1040 500" role="img" aria-label="v0.5 runtime architecture diagram">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"></polygon>
+            </marker>
+          </defs>
+          <text x="35" y="38" fill="#dbe7f3" font-size="13" font-weight="700">启动时：先准备工具，只做一次</text>
+
+          <rect x="35" y="58" width="180" height="70" rx="7" fill="#1b2b45" stroke="#4d79bd"/>
+          <text x="125" y="86" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">大模型服务</text>
+          <text x="125" y="108" fill="#b8c4d4" font-size="11" text-anchor="middle">SGLang Engine</text>
+
+          <rect x="260" y="58" width="180" height="70" rx="7" fill="#17322f" stroke="#4bb9a8"/>
+          <text x="350" y="86" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">选块策略</text>
+          <text x="350" y="108" fill="#b8c4d4" font-size="11" text-anchor="middle">vFlow</text>
+
+          <rect x="485" y="58" width="180" height="70" rx="7" fill="#342818" stroke="#d39845"/>
+          <text x="575" y="86" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">要存什么摘要</text>
+          <text x="575" y="108" fill="#b8c4d4" font-size="11" text-anchor="middle">cache meta</text>
+
+          <rect x="710" y="58" width="260" height="70" rx="7" fill="#3a1c25" stroke="#d66a7b"/>
+          <text x="840" y="86" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">历史仓库</text>
+          <text x="840" y="108" fill="#b8c4d4" font-size="11" text-anchor="middle">VortexCachePool</text>
+
+          <path d="M215 93 L260 93" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M440 93 L485 93" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M665 93 L710 93" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+
+          <rect x="260" y="165" width="180" height="70" rx="7" fill="#14243d" stroke="#4d79bd"/>
+          <text x="350" y="193" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">选用注意力后端</text>
+          <text x="350" y="215" fill="#b8c4d4" font-size="11" text-anchor="middle">决定输出格式</text>
+
+          <rect x="485" y="165" width="180" height="70" rx="7" fill="#1e2532" stroke="#6f7a88"/>
+          <text x="575" y="193" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">按后端准备草稿纸</text>
+          <text x="575" y="215" fill="#b8c4d4" font-size="11" text-anchor="middle">Indexer Context</text>
+
+          <rect x="710" y="165" width="260" height="70" rx="7" fill="#362b19" stroke="#d39845"/>
+          <text x="840" y="193" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">挑历史块的高速工具</text>
+          <text x="840" y="215" fill="#b8c4d4" font-size="11" text-anchor="middle">compiled_indexer</text>
+
+          <path d="M215 93 L238 93 L238 200 L260 200" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+          <path d="M440 200 L485 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M665 200 L710 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+
+          <line x1="35" y1="275" x2="1005" y2="275" stroke="#2b3544" stroke-width="1"/>
+          <text x="35" y="308" fill="#dbe7f3" font-size="13" font-weight="700">一次 decode forward：更新当前输入 token，再预测下一个 token</text>
+
+          <rect x="30" y="330" width="155" height="70" rx="7" fill="#1e2532" stroke="#6f7a88"/>
+          <text x="108" y="358" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">填写本轮草稿纸</text>
+          <text x="108" y="380" fill="#b8c4d4" font-size="11" text-anchor="middle">plan_decode</text>
+
+          <rect x="225" y="330" width="155" height="70" rx="7" fill="#14243d" stroke="#4d79bd"/>
+          <text x="303" y="358" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">当前 token 入库</text>
+          <text x="303" y="380" fill="#b8c4d4" font-size="11" text-anchor="middle">写入 K/V</text>
+
+          <rect x="420" y="330" width="155" height="70" rx="7" fill="#17322f" stroke="#4bb9a8"/>
+          <text x="498" y="358" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">更新仓库摘要</text>
+          <text x="498" y="380" fill="#b8c4d4" font-size="11" text-anchor="middle">compiled_cache</text>
+
+          <rect x="615" y="330" width="155" height="70" rx="7" fill="#362b19" stroke="#d39845"/>
+          <text x="693" y="358" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">挑出重点历史</text>
+          <text x="693" y="380" fill="#b8c4d4" font-size="11" text-anchor="middle">compiled_indexer</text>
+
+          <rect x="810" y="330" width="195" height="70" rx="7" fill="#14352b" stroke="#68b35a"/>
+          <text x="908" y="358" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">预测下一个 token</text>
+          <text x="908" y="380" fill="#b8c4d4" font-size="11" text-anchor="middle">Attention decode</text>
+
+          <path d="M185 365 L225 365" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M380 365 L420 365" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M575 365 L615 365" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M770 365 L810 365" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+
+          <path d="M840 128 L840 165" stroke="#6f7a88" stroke-width="2" marker-end="url(#arrow)"/>
+          <path d="M840 235 C840 280 693 280 693 330" stroke="#6f7a88" stroke-width="2" stroke-dasharray="5 5" fill="none" marker-end="url(#arrow)"/>
+          <text x="725" y="286" fill="#8fa0b5" font-size="11">启动时编译好的挑块工具在这里反复使用</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <section id="flowapi" class="page">
+    <div class="band">
+      <h2>你写一个策略时，其实只回答三个问题</h2>
+      <div class="shape-board">
+        <div class="shape"><strong>我要给每块历史存什么摘要？</strong><code>源码名：create_cache</code><p>比如每个历史块的平均 key、最大/最小值、value 能量。</p></div>
+        <div class="shape"><strong>当前 token 写入后，摘要怎么更新？</strong><code>源码名：forward_cache</code><p>KV cache 变长后，只更新受影响的历史块摘要。</p></div>
+        <div class="shape"><strong>更新后，怎么挑重要历史块？</strong><code>源码名：forward_indexer</code><p>用当前 query 给已有历史块打分，然后选 topK 块。</p></div>
+      </div>
+    </div>
+
+    <div class="band">
+          <h2>三个东西的关系</h2>
+      <div class="matrix">
+        <div class="row">
+          <div class="cell head">白话对象</div>
+          <div class="cell head">普通注意力里</div>
+          <div class="cell head">MLA 里</div>
+          <div class="cell head">用途</div>
+          <div class="cell head">位置</div>
+        </div>
+        <div class="row">
+          <div class="cell head">原始历史内容</div>
+          <div class="cell">叫 `k` 和 `v`</div>
+          <div class="cell">叫 `latent`</div>
+          <div class="cell">真正 attention 要读取的数据</div>
+          <div class="cell path">flow.py / flow_mla.py</div>
+        </div>
+        <div class="row">
+          <div class="cell head">历史摘要</div>
+          <div class="cell">平均值、最大/最小值、历史分数等</div>
+          <div class="cell">也是摘要，只是格式不同</div>
+          <div class="cell">不用看完整历史，也能先粗略判断哪块重要</div>
+          <div class="cell path">algorithms.py / algorithms_mla.py</div>
+        </div>
+        <div class="row">
+          <div class="cell head">记录流程</div>
+          <div class="cell">先记录步骤，不立刻计算</div>
+          <div class="cell">同样先记录步骤</div>
+          <div class="cell">先记录计算步骤，再编译成快代码</div>
+          <div class="cell path">abs/tensor.py</div>
+        </div>
+      </div>
+      <div class="note">第一遍可以不用懂这些形状。你只要知道：原始历史很大，历史摘要更小，Vortex 先看摘要来决定要读哪些原始历史。</div>
+    </div>
+  </section>
+
+  <section id="algos" class="page">
+    <div class="band">
+      <h2>普通注意力的内置选块策略</h2>
+      <div class="grid two">
+        <div class="unit"><strong>平均代表法</strong><p><span class="tag teal">源码：block_sparse_attention</span><br>每块历史用一个“平均代表”表示，当前 query 和代表越像，这块越可能被选中。</p></div>
+        <div class="unit"><strong>按多个注意力头综合打分</strong><p><span class="tag teal">源码：gqa_block_sparse_attention</span><br>不同 head 各自判断重要性，最后合并成一个分数。</p></div>
+        <div class="unit"><strong>上下界估算法</strong><p><span class="tag teal">源码：gqa_quest_sparse_attention</span><br>用每块的最大值/最小值估计“这块最多可能有多相关”。</p></div>
+        <div class="unit"><strong>把大块再切小块</strong><p><span class="tag teal">源码：lserve_sparse_attention</span><br>一整块里可能只有局部重要，所以再看更细的小块统计。</p></div>
+        <div class="unit"><strong>小块平均代表法</strong><p><span class="tag teal">源码：lserve_centroid_sparse_attention</span><br>把“平均代表法”和“小块切分”结合起来。</p></div>
+        <div class="unit"><strong>只看部分特征</strong><p><span class="tag teal">源码：masked_quest_sparse_attention</span><br>打分前屏蔽掉一些维度，只让指定特征参与判断。</p></div>
+        <div class="unit"><strong>看相对突出程度</strong><p><span class="tag teal">源码：centered_block_sparse_attention</span><br>不是看绝对分数，而是看它比平均水平高多少。</p></div>
+        <div class="unit"><strong>带记忆的打分</strong><p><span class="tag teal">源码：running_avg_block_sparse</span><br>把前几步的打分也记下来，避免每步选择剧烈抖动。</p></div>
+        <div class="unit"><strong>按 value 能量加权</strong><p><span class="tag teal">源码：venergy_gated_centroid</span><br>不仅看 key 和 query 像不像，也看这块 value 本身有没有信息量。</p></div>
+      </div>
+    </div>
+
+    <div class="band">
+      <h2>MLA 模型的内置选块策略</h2>
+      <div class="grid two">
+        <div class="unit"><strong>完整位置信息版</strong><p><span class="tag violet">源码：rope_aware_block_sparse_mla</span><br>打分时同时考虑内容信息和位置信息。</p></div>
+        <div class="unit"><strong>MLA 小块平均代表法</strong><p><span class="tag violet">源码：lserve_centroid_mla</span><br>在 MLA 的 latent cache 上做小块摘要。</p></div>
+        <div class="unit"><strong>忽略位置信息版</strong><p><span class="tag violet">源码：rope_unaware_block_sparse_mla</span><br>打分时主要看内容，不看 RoPE 位置维度。</p></div>
+        <div class="unit"><strong>忽略位置 + 小块版</strong><p><span class="tag violet">源码：rope_unaware_lserve_centroid_mla</span><br>把忽略位置和小块摘要结合起来。</p></div>
+      </div>
+      <div class="note">MLA 可以先简单理解成另一种 KV cache 组织方式。第一遍不用深究 `kv_c`、`k_pe`，只要知道它也需要“给历史块打分并挑块”。</div>
+    </div>
+  </section>
+
+  <section id="compiler" class="page">
+    <div class="band">
+      <h2>为什么不能直接跑 Python</h2>
+      <div class="split">
+        <div class="lane">
+          <div class="lane-title"><b>能合在一起的普通计算</b><span>源码里叫 Schedule.W</span></div>
+          <div class="flowline">
+            <div class="node compiler"><b>先记录计算步骤</b><p>比如先求平均，再矩阵乘，再取最大值。</p></div>
+            <div class="node compiler"><b>把多步合成一个 GPU 程序</b><p>源码里可能走 `triton` 或 `cuda`。</p></div>
+            <div class="node kernel"><b>推理时直接跑快程序</b><p>减少 Python 调度开销，也减少中间数据搬来搬去。</p></div>
+          </div>
+        </div>
+        <div class="lane">
+          <div class="lane-title"><b>不能随便融合的特殊步骤</b><span>源码里叫 Schedule.S</span></div>
+          <div class="flowline">
+            <div class="node compiler"><b>单独调用专门工具</b><p>比如 topK 这种“选前 K 个”的步骤，通常有专门实现。</p></div>
+            <div class="node kernel"><b>按后端选择实现</b><p>FlashInfer 和 TRT-LLM 要的数据格式不同，所以工具也不同。</p></div>
+            <div class="node kernel"><b>输出最终选择结果</b><p>源码名：`topK / approxTopK / Union`。</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="band">
+      <h2>最后由谁真正算 attention</h2>
+      <div class="grid three">
+        <div class="unit"><strong>FlashInfer</strong><p>常用的高性能 attention 库。Vortex 把选中的历史块整理成它能读的格式。</p></div>
+        <div class="unit"><strong>TRT-LLM</strong><p>NVIDIA 推理栈相关路径。它需要另一种“历史块列表”格式。</p></div>
+        <div class="unit"><strong>MLA</strong><p>给 MLA 结构模型用的路径，历史缓存组织方式和普通 K/V 不一样。</p></div>
+      </div>
+      <div class="note">白话版：Vortex 负责“挑哪些历史块”；FlashInfer/TRT-LLM/MLA 负责“真的用这些块算 attention”。</div>
+    </div>
+  </section>
+
+  <section id="codewalk" class="page">
+    <div class="band">
+      <h2>代码分析理解模块</h2>
+      <p class="lead">这里不按源码行号硬读，而是按“这个文件回答了什么问题”来读。第一站是 `flow/algorithms.py`，因为它最直接展示 Vortex 怎么定义选块策略。</p>
+      <div class="code-tabs">
+        <button class="code-tab active" data-code-page="code-algorithms">algorithms.py</button>
+        <button class="code-tab" data-code-page="code-flow">flow.py 之后看</button>
+        <button class="code-tab" data-code-page="code-backend">flashinfer.py 之后看</button>
+      </div>
+
+      <div id="code-algorithms" class="code-panel active">
+        <div class="band">
+          <h2>最合适的读法：三问法</h2>
+          <div class="read-steps">
+            <div class="read-step"><b>1. 先找 register 名字</b><p>`@register("block_sparse_attention")` 说明这个策略运行时叫什么名字。</p></div>
+            <div class="read-step"><b>2. 看 create_cache</b><p>它回答“每个历史块要额外存什么摘要”。比如 centroid、max/min、v_energy。</p></div>
+            <div class="read-step"><b>3. 看 forward_cache</b><p>它回答“当前 token 写进 K/V 后，怎么更新仓库里的摘要”。</p></div>
+            <div class="read-step"><b>4. 看 forward_indexer</b><p>它回答“怎么用 query 和摘要打分，最后 topK 选哪些历史块”。</p></div>
+          </div>
+          <div class="note">不要一开始陷进每个算子的实现。先把每个策略压缩成一句话：存什么摘要、怎么更新、怎么打分、最后怎么选。</div>
+        </div>
+
+        <div class="band">
+          <h2>algorithms.py 的整体结构</h2>
+          <div class="pipeline">
+            <div class="stage">
+              <div class="label user">文件头</div>
+              <div class="body"><b>导入框架算子</b><p>`Mean / GeMM / Max / topK` 是 indexer 侧算子；`CMean / CMax / CMin` 是 cache 侧算子。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label flow">每个类</div>
+              <div class="body"><b>一个类就是一个选块策略</b><p>比如 `BlockSparseAttention`、`GQAQuestSparseAttention`、`LServeSparseAttention`。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label trace">三个函数</div>
+              <div class="body"><b>create_cache / forward_cache / forward_indexer</b><p>这三个函数合起来定义“摘要是什么、摘要怎么更新、怎么打分选块”。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label runtime">运行时</div>
+              <div class="body"><b>被 trace、编译、反复调用</b><p>你写的是 Python 风格策略，真正推理时走编译后的 cache/indexer 快代码。</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>普通 K/V 策略可视化</h2>
+          <p class="lead">每个策略都还是三问法：存什么摘要、怎么用 query 打分、怎么 topK。区别在于“摘要长什么样”和“多个 head / sub-block / 特征维怎么合并”。</p>
+          <div class="strategy-viz-tabs">
+            <button class="strategy-viz-tab active" data-strategy-viz="viz-block">BlockSparse</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-gqa-block">GQA Block</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-gqa-quest">GQA QUEST</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-lserve">LServe</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-lserve-centroid">LServe Centroid</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-masked-quest">Masked QUEST</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-centered">Centered</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-running">Running Avg</button>
+            <button class="strategy-viz-tab" data-strategy-viz="viz-venergy">V-Energy</button>
+          </div>
+
+          <div id="viz-block" class="strategy-viz-panel active">
+            <div class="svg-wrap">
+              <svg width="1080" height="430" viewBox="0 0 1080 430" role="img" aria-label="BlockSparseAttention query head mean diagram">
+                <defs>
+                  <marker id="qMeanArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+                    <polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"></polygon>
+                  </marker>
+                </defs>
+
+                <text x="36" y="34" fill="#dbe7f3" font-size="14" font-weight="700">BlockSparseAttention：先把多个 query/head 平均成一个代表</text>
+                <rect x="36" y="58" width="250" height="270" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="161" y="88" fill="#fff" font-size="16" text-anchor="middle" font-weight="700">q: 当前 query 组</text>
+                <text x="161" y="112" fill="#b8c4d4" font-size="12" text-anchor="middle">逻辑形状 [B, H_q, D]</text>
+
+                <rect x="76" y="142" width="170" height="34" rx="5" fill="#1b2b45" stroke="#6ea8fe"/>
+                <text x="161" y="164" fill="#dbe7f3" font-size="12" text-anchor="middle">head 0: [D]</text>
+                <rect x="76" y="186" width="170" height="34" rx="5" fill="#1b2b45" stroke="#6ea8fe"/>
+                <text x="161" y="208" fill="#dbe7f3" font-size="12" text-anchor="middle">head 1: [D]</text>
+                <rect x="76" y="230" width="170" height="34" rx="5" fill="#1b2b45" stroke="#6ea8fe"/>
+                <text x="161" y="252" fill="#dbe7f3" font-size="12" text-anchor="middle">head ...: [D]</text>
+                <text x="161" y="296" fill="#8fa0b5" font-size="12" text-anchor="middle">同一个 token/位置里的多个 query</text>
+
+                <path d="M286 190 L385 190" stroke="#6f7a88" stroke-width="2" marker-end="url(#qMeanArrow)"/>
+                <text x="336" y="172" fill="#b8c4d4" font-size="12" text-anchor="middle">Mean(dim=1)</text>
+                <text x="336" y="212" fill="#8fa0b5" font-size="11" text-anchor="middle">沿 H_q 合并</text>
+
+                <rect x="385" y="125" width="215" height="130" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="492" y="158" fill="#fff" font-size="16" text-anchor="middle" font-weight="700">q_mean</text>
+                <text x="492" y="183" fill="#b8c4d4" font-size="12" text-anchor="middle">形状 [B, 1, D]</text>
+                <rect x="432" y="204" width="120" height="30" rx="5" fill="#12302d" stroke="#56d6bf"/>
+                <text x="492" y="224" fill="#dbe7f3" font-size="12" text-anchor="middle">一个 query 代表</text>
+
+                <path d="M600 190 L690 190" stroke="#6f7a88" stroke-width="2" marker-end="url(#qMeanArrow)"/>
+                <text x="645" y="172" fill="#b8c4d4" font-size="12" text-anchor="middle">GeMM / 点积</text>
+
+                <rect x="690" y="58" width="350" height="270" rx="8" fill="#362b19" stroke="#d39845"/>
+                <text x="865" y="88" fill="#fff" font-size="16" text-anchor="middle" font-weight="700">历史块代表 centroids</text>
+                <text x="865" y="112" fill="#b8c4d4" font-size="12" text-anchor="middle">cache["centroids"] 形状 [S, 1, D]</text>
+
+                <rect x="733" y="142" width="180" height="34" rx="5" fill="#342818" stroke="#f1b95b"/>
+                <text x="823" y="164" fill="#dbe7f3" font-size="12" text-anchor="middle">历史块 p=0 的代表 c_0</text>
+                <text x="944" y="164" fill="#b8c4d4" font-size="12">score(0)</text>
+
+                <rect x="733" y="186" width="180" height="34" rx="5" fill="#342818" stroke="#f1b95b"/>
+                <text x="823" y="208" fill="#dbe7f3" font-size="12" text-anchor="middle">历史块 p=1 的代表 c_1</text>
+                <text x="944" y="208" fill="#b8c4d4" font-size="12">score(1)</text>
+
+                <rect x="733" y="230" width="180" height="34" rx="5" fill="#342818" stroke="#f1b95b"/>
+                <text x="823" y="252" fill="#dbe7f3" font-size="12" text-anchor="middle">历史块 p=... 的代表 c_p</text>
+                <text x="944" y="252" fill="#b8c4d4" font-size="12">score(p)</text>
+
+                <path d="M865 328 L865 368" stroke="#6f7a88" stroke-width="2" marker-end="url(#qMeanArrow)"/>
+                <rect x="765" y="368" width="200" height="42" rx="7" fill="#14352b" stroke="#68b35a"/>
+                <text x="865" y="394" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">topK 选分数最高的块</text>
+              </svg>
+            </div>
+            <div class="diagram-note">这是最基础的 centroid 策略：每块历史存一个平均 key，当前 query/head 先平均，再和所有历史块代表比相似度。</div>
+          </div>
+
+          <div id="viz-gqa-block" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="GQABlockSparseAttention diagram">
+                <defs><marker id="gqaBlockArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">GQABlockSparseAttention：多个 head 分开投票</text>
+                <rect x="35" y="58" width="220" height="300" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="145" y="88" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">当前 query 组</text>
+                <text x="145" y="112" fill="#b8c4d4" font-size="12" text-anchor="middle">q = [B, H_q, D]</text>
+                <rect x="75" y="145" width="140" height="30" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="145" y="165" fill="#dbe7f3" font-size="12" text-anchor="middle">head 0</text>
+                <rect x="75" y="187" width="140" height="30" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="145" y="207" fill="#dbe7f3" font-size="12" text-anchor="middle">head 1</text>
+                <rect x="75" y="229" width="140" height="30" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="145" y="249" fill="#dbe7f3" font-size="12" text-anchor="middle">head ...</text>
+                <text x="145" y="305" fill="#8fa0b5" font-size="12" text-anchor="middle">这些 head 不先平均</text>
+                <path d="M255 185 L330 185" stroke="#6f7a88" stroke-width="2" marker-end="url(#gqaBlockArrow)"/>
+                <rect x="330" y="58" width="245" height="300" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="438" y="120" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">历史块 centroid</text>
+                <text x="438" y="145" fill="#b8c4d4" font-size="12" text-anchor="middle">cache["centroids"]</text>
+                <text x="452" y="172" fill="#dbe7f3" font-size="12" text-anchor="middle">每个 page 一个平均 key</text>
+                <rect x="375" y="205" width="155" height="32" rx="5" fill="#12302d" stroke="#56d6bf"/><text x="452" y="226" fill="#dbe7f3" font-size="12" text-anchor="middle">page0 centroid c0</text>
+                <rect x="375" y="248" width="155" height="32" rx="5" fill="#12302d" stroke="#56d6bf"/><text x="452" y="269" fill="#dbe7f3" font-size="12" text-anchor="middle">page1 centroid c1</text>
+                <rect x="375" y="291" width="155" height="32" rx="5" fill="#12302d" stroke="#56d6bf"/><text x="452" y="312" fill="#dbe7f3" font-size="12" text-anchor="middle">page2 centroid c2</text>
+                <path d="M575 200 L640 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#gqaBlockArrow)"/>
+                <rect x="640" y="58" width="285" height="300" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="783" y="88" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">head × page 分数矩阵</text>
+                <text x="783" y="114" fill="#b8c4d4" font-size="12" text-anchor="middle">每个 head 都给每个 page 打分</text>
+                <text x="700" y="150" fill="#8fa0b5" font-size="11">page0</text><text x="766" y="150" fill="#8fa0b5" font-size="11">page1</text><text x="832" y="150" fill="#8fa0b5" font-size="11">page2</text>
+                <text x="660" y="185" fill="#8fa0b5" font-size="11">head0</text>
+                <text x="660" y="230" fill="#8fa0b5" font-size="11">head1</text>
+                <text x="660" y="275" fill="#8fa0b5" font-size="11">head...</text>
+                <rect x="705" y="166" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="728" y="186" fill="#dbe7f3" font-size="11" text-anchor="middle">s00</text>
+                <rect x="771" y="166" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="794" y="186" fill="#dbe7f3" font-size="11" text-anchor="middle">s01</text>
+                <rect x="837" y="166" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="860" y="186" fill="#dbe7f3" font-size="11" text-anchor="middle">s02</text>
+                <rect x="705" y="211" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="728" y="231" fill="#dbe7f3" font-size="11" text-anchor="middle">s10</text>
+                <rect x="771" y="211" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="794" y="231" fill="#dbe7f3" font-size="11" text-anchor="middle">s11</text>
+                <rect x="837" y="211" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="860" y="231" fill="#dbe7f3" font-size="11" text-anchor="middle">s12</text>
+                <rect x="705" y="256" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="728" y="276" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <rect x="771" y="256" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="794" y="276" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <rect x="837" y="256" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="860" y="276" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <text x="783" y="322" fill="#8fa0b5" font-size="12" text-anchor="middle">分数总数 = H_q × page 数</text>
+                <path d="M925 200 L990 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#gqaBlockArrow)"/>
+                <rect x="990" y="95" width="140" height="210" rx="8" fill="#28223c" stroke="#b79cff"/>
+                <text x="1060" y="128" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">合并成 page 分</text>
+                <text x="1060" y="160" fill="#b8c4d4" font-size="12" text-anchor="middle">先 softmax</text>
+                <text x="1060" y="184" fill="#b8c4d4" font-size="12" text-anchor="middle">再跨 head 取 max</text>
+                <text x="1060" y="220" fill="#dbe7f3" font-size="12" text-anchor="middle">每个 page 剩 1 个分数</text>
+                <rect x="1020" y="245" width="80" height="38" rx="7" fill="#14352b" stroke="#68b35a"/><text x="1060" y="269" fill="#fff" font-size="13" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">对：中间先得到 H_q × page 数个分数。之后才把多个 head 对同一个 page 的分数合并，变成每个 page 一个最终分数，再 topK。</div>
+          </div>
+
+          <div id="viz-gqa-quest" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1180" height="500" viewBox="0 0 1180 500" role="img" aria-label="GQAQuestSparseAttention diagram">
+                <defs><marker id="questArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">GQAQuestSparseAttention：不用平均代表，改用 max/min 包络估分</text>
+                <rect x="35" y="70" width="215" height="280" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="138" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">当前 query head</text>
+                <text x="138" y="128" fill="#b8c4d4" font-size="12" text-anchor="middle">q_h 是一个长度为 D 的向量</text>
+                <text x="78" y="166" fill="#8fa0b5" font-size="11">d1</text><text x="118" y="166" fill="#8fa0b5" font-size="11">d2</text><text x="158" y="166" fill="#8fa0b5" font-size="11">d3</text><text x="198" y="166" fill="#8fa0b5" font-size="11">d4</text>
+                <rect x="68" y="178" width="28" height="54" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="82" y="208" fill="#dbe7f3" font-size="12" text-anchor="middle">+</text>
+                <rect x="108" y="198" width="28" height="34" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="122" y="219" fill="#dbe7f3" font-size="12" text-anchor="middle">-</text>
+                <rect x="148" y="168" width="28" height="64" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="162" y="204" fill="#dbe7f3" font-size="12" text-anchor="middle">+</text>
+                <rect x="188" y="188" width="28" height="44" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="202" y="215" fill="#dbe7f3" font-size="12" text-anchor="middle">-</text>
+                <text x="138" y="270" fill="#b8c4d4" font-size="12" text-anchor="middle">正维选上包络，负维选下包络</text>
+
+                <path d="M250 210 L315 210" stroke="#6f7a88" stroke-width="2" marker-end="url(#questArrow)"/>
+                <rect x="315" y="70" width="390" height="280" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="510" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">一个历史 page 的 key 折线</text>
+                <text x="510" y="128" fill="#b8c4d4" font-size="12" text-anchor="middle">三条细线是 page 里的不同 token key；粗线是上下包络</text>
+                <line x1="355" y1="285" x2="665" y2="285" stroke="#2b3544"/>
+                <line x1="355" y1="150" x2="355" y2="285" stroke="#2b3544"/>
+                <text x="372" y="305" fill="#8fa0b5" font-size="11">d1</text><text x="432" y="305" fill="#8fa0b5" font-size="11">d2</text><text x="492" y="305" fill="#8fa0b5" font-size="11">d3</text><text x="552" y="305" fill="#8fa0b5" font-size="11">d4</text><text x="612" y="305" fill="#8fa0b5" font-size="11">d5</text>
+                <polyline points="375,230 435,175 495,210 555,165 615,215" fill="none" stroke="#8fa0b5" stroke-width="2"/>
+                <polyline points="375,205 435,240 495,160 555,225 615,180" fill="none" stroke="#8fa0b5" stroke-width="2"/>
+                <polyline points="375,250 435,205 495,235 555,190 615,245" fill="none" stroke="#8fa0b5" stroke-width="2"/>
+                <polyline points="375,205 435,175 495,160 555,165 615,180" fill="none" stroke="#f1b95b" stroke-width="4"/>
+                <polyline points="375,250 435,240 495,235 555,225 615,245" fill="none" stroke="#6ea8fe" stroke-width="4"/>
+                <text x="635" y="178" fill="#f1b95b" font-size="12">max 包络 M_p</text>
+                <text x="635" y="248" fill="#6ea8fe" font-size="12">min 包络 m_p</text>
+
+                <path d="M705 210 L775 210" stroke="#6f7a88" stroke-width="2" marker-end="url(#questArrow)"/>
+                <rect x="775" y="70" width="245" height="280" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="898" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">用包络估上界</text>
+                <text x="898" y="128" fill="#b8c4d4" font-size="12" text-anchor="middle">每维取 max(q*M_p, q*m_p)</text>
+                <text x="898" y="170" fill="#f1b95b" font-size="12" text-anchor="middle">q 为正：上包络乘出来更大</text>
+                <text x="898" y="200" fill="#6ea8fe" font-size="12" text-anchor="middle">q 为负：下包络乘出来更大</text>
+                <rect x="828" y="232" width="140" height="44" rx="7" fill="#362b19" stroke="#d39845"/>
+                <text x="898" y="258" fill="#dbe7f3" font-size="12" text-anchor="middle">沿 D 求和 = page 分数</text>
+
+                <path d="M1020 210 L1070 210" stroke="#6f7a88" stroke-width="2" marker-end="url(#questArrow)"/>
+                <rect x="1070" y="110" width="85" height="205" rx="8" fill="#28223c" stroke="#b79cff"/>
+                <text x="1113" y="146" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">合并</text>
+                <text x="1113" y="178" fill="#b8c4d4" font-size="12" text-anchor="middle">跨 head</text>
+                <text x="1113" y="202" fill="#b8c4d4" font-size="12" text-anchor="middle">取 max</text>
+                <rect x="1090" y="242" width="46" height="38" rx="7" fill="#14352b" stroke="#68b35a"/>
+                <text x="1113" y="266" fill="#fff" font-size="12" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">QUEST 的核心是“这个历史块最多可能多相关”，所以存的是每个维度的 max/min，而不是 centroid。</div>
+          </div>
+
+          <div id="viz-lserve" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="LServeSparseAttention diagram">
+                <defs><marker id="lserveArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">LServeSparseAttention：先把 page 切成 sub-block，再做 QUEST 包络</text>
+                <rect x="35" y="74" width="240" height="220" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="155" y="106" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">一个历史 page</text>
+                <rect x="70" y="145" width="45" height="70" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="93" y="185" fill="#dbe7f3" font-size="11" text-anchor="middle">sub0</text>
+                <rect x="120" y="145" width="45" height="70" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="143" y="185" fill="#dbe7f3" font-size="11" text-anchor="middle">sub1</text>
+                <rect x="170" y="145" width="45" height="70" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="193" y="185" fill="#dbe7f3" font-size="11" text-anchor="middle">sub2</text>
+                <rect x="220" y="145" width="25" height="70" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="233" y="185" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <path d="M275 184 L355 184" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveArrow)"/>
+                <rect x="355" y="74" width="245" height="220" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="478" y="106" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">每个 sub-block 存包络</text>
+                <text x="478" y="132" fill="#b8c4d4" font-size="12" text-anchor="middle">CMaxInterleave / CMinInterleave</text>
+                <rect x="390" y="155" width="70" height="58" rx="6" fill="#2b2217" stroke="#d39845"/>
+                <polyline points="402,185 416,165 430,176 444,160" fill="none" stroke="#f1b95b" stroke-width="3"/>
+                <polyline points="402,202 416,195 430,205 444,192" fill="none" stroke="#6ea8fe" stroke-width="3"/>
+                <text x="425" y="235" fill="#b8c4d4" font-size="11" text-anchor="middle">sub0 包络</text>
+                <rect x="490" y="155" width="70" height="58" rx="6" fill="#2b2217" stroke="#d39845"/>
+                <polyline points="502,180 516,170 530,160 544,175" fill="none" stroke="#f1b95b" stroke-width="3"/>
+                <polyline points="502,200 516,207 530,196 544,205" fill="none" stroke="#6ea8fe" stroke-width="3"/>
+                <text x="525" y="235" fill="#b8c4d4" font-size="11" text-anchor="middle">sub1 包络</text>
+                <text x="478" y="265" fill="#8fa0b5" font-size="12" text-anchor="middle">每个小块各自有上/下包络线</text>
+                <path d="M600 184 L675 184" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveArrow)"/>
+                <rect x="675" y="74" width="285" height="260" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="818" y="106" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">head × sub-block 分数矩阵</text>
+                <text x="818" y="132" fill="#b8c4d4" font-size="12" text-anchor="middle">每个 head 都给每个 sub-block 估分</text>
+                <text x="742" y="165" fill="#8fa0b5" font-size="11">sub0</text><text x="807" y="165" fill="#8fa0b5" font-size="11">sub1</text><text x="872" y="165" fill="#8fa0b5" font-size="11">sub2</text>
+                <text x="695" y="198" fill="#8fa0b5" font-size="11">head0</text>
+                <text x="695" y="243" fill="#8fa0b5" font-size="11">head1</text>
+                <text x="695" y="288" fill="#8fa0b5" font-size="11">head...</text>
+                <rect x="740" y="179" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="763" y="199" fill="#dbe7f3" font-size="11" text-anchor="middle">s00</text>
+                <rect x="805" y="179" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="828" y="199" fill="#dbe7f3" font-size="11" text-anchor="middle">s01</text>
+                <rect x="870" y="179" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="893" y="199" fill="#dbe7f3" font-size="11" text-anchor="middle">s02</text>
+                <rect x="740" y="224" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="763" y="244" fill="#dbe7f3" font-size="11" text-anchor="middle">s10</text>
+                <rect x="805" y="224" width="46" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="828" y="244" fill="#fff" font-size="11" text-anchor="middle">s11</text>
+                <rect x="870" y="224" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="893" y="244" fill="#dbe7f3" font-size="11" text-anchor="middle">s12</text>
+                <rect x="740" y="269" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="763" y="289" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <rect x="805" y="269" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="828" y="289" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <rect x="870" y="269" width="46" height="30" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="893" y="289" fill="#dbe7f3" font-size="11" text-anchor="middle">...</text>
+                <text x="818" y="318" fill="#f1b95b" font-size="12" text-anchor="middle">取整个矩阵最大值，比如 s11</text>
+                <path d="M960 205 L1020 205" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveArrow)"/>
+                <rect x="1020" y="120" width="110" height="170" rx="8" fill="#28223c" stroke="#b79cff"/>
+                <text x="1075" y="153" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">page 分数</text>
+                <text x="1075" y="184" fill="#b8c4d4" font-size="12" text-anchor="middle">max over</text>
+                <text x="1075" y="207" fill="#b8c4d4" font-size="12" text-anchor="middle">head + sub</text>
+                <rect x="1038" y="238" width="74" height="36" rx="7" fill="#14352b" stroke="#68b35a"/><text x="1075" y="261" fill="#fff" font-size="13" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">它选的仍然是大 page，但分数来自 page 内最相关的 sub-block。</div>
+          </div>
+
+          <div id="viz-lserve-centroid" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="LServeCentroidSparseAttention diagram">
+                <defs><marker id="lserveCentroidArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">LServeCentroidSparseAttention：BlockSparse 的 sub-block 版本</text>
+                <rect x="35" y="70" width="200" height="270" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="135" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">query 组</text>
+                <text x="135" y="130" fill="#b8c4d4" font-size="12" text-anchor="middle">q = [B, H_q, D]</text>
+                <rect x="72" y="158" width="126" height="26" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="135" y="176" fill="#dbe7f3" font-size="11" text-anchor="middle">head0</text>
+                <rect x="72" y="194" width="126" height="26" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="135" y="212" fill="#dbe7f3" font-size="11" text-anchor="middle">head1</text>
+                <path d="M92 252 L178 252" stroke="#6ea8fe" stroke-width="3"/><text x="135" y="277" fill="#dbe7f3" font-size="12" text-anchor="middle">Mean(dim=1)</text>
+                <text x="135" y="305" fill="#8fa0b5" font-size="12" text-anchor="middle">得到 q_mean</text>
+                <path d="M235 200 L305 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveCentroidArrow)"/>
+                <rect x="305" y="70" width="310" height="270" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="460" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">page 切成 sub-block</text>
+                <text x="460" y="128" fill="#b8c4d4" font-size="12" text-anchor="middle">每个小块用 CMeanInterleave 算一个 centroid</text>
+                <rect x="345" y="165" width="64" height="88" rx="6" fill="#12302d" stroke="#56d6bf"/><text x="377" y="191" fill="#dbe7f3" font-size="11" text-anchor="middle">sub0</text><circle cx="377" cy="222" r="15" fill="#17322f" stroke="#56d6bf"/><text x="377" y="226" fill="#fff" font-size="10" text-anchor="middle">c0</text>
+                <rect x="428" y="165" width="64" height="88" rx="6" fill="#12302d" stroke="#56d6bf"/><text x="460" y="191" fill="#dbe7f3" font-size="11" text-anchor="middle">sub1</text><circle cx="460" cy="222" r="15" fill="#17322f" stroke="#56d6bf"/><text x="460" y="226" fill="#fff" font-size="10" text-anchor="middle">c1</text>
+                <rect x="511" y="165" width="64" height="88" rx="6" fill="#12302d" stroke="#56d6bf"/><text x="543" y="191" fill="#dbe7f3" font-size="11" text-anchor="middle">sub2</text><circle cx="543" cy="222" r="15" fill="#17322f" stroke="#56d6bf"/><text x="543" y="226" fill="#fff" font-size="10" text-anchor="middle">c2</text>
+                <text x="460" y="295" fill="#8fa0b5" font-size="12" text-anchor="middle">一个 page 里会有多个 centroid</text>
+                <path d="M615 200 L685 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveCentroidArrow)"/>
+                <rect x="685" y="70" width="285" height="270" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="828" y="103" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">同一 page 内的 sub-block 分数</text>
+                <text x="828" y="130" fill="#b8c4d4" font-size="12" text-anchor="middle">score_i = q_mean · c_i</text>
+                <text x="735" y="172" fill="#8fa0b5" font-size="11">sub0</text><rect x="780" y="153" width="126" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="843" y="173" fill="#dbe7f3" font-size="11" text-anchor="middle">score0 = q·c0</text>
+                <text x="735" y="217" fill="#8fa0b5" font-size="11">sub1</text><rect x="780" y="198" width="126" height="30" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="843" y="218" fill="#dbe7f3" font-size="11" text-anchor="middle">score1 = q·c1</text>
+                <text x="735" y="262" fill="#8fa0b5" font-size="11">sub2</text><rect x="780" y="243" width="126" height="30" rx="4" fill="#2b2217" stroke="#f1b95b"/><text x="843" y="263" fill="#fff" font-size="11" text-anchor="middle">score2 最大</text>
+                <text x="828" y="310" fill="#f1b95b" font-size="12" text-anchor="middle">page 分数 = max(score0, score1, score2...)</text>
+                <path d="M970 200 L1035 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#lserveCentroidArrow)"/>
+                <rect x="1035" y="140" width="95" height="110" rx="8" fill="#14352b" stroke="#68b35a"/>
+                <text x="1083" y="178" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">topK</text>
+                <text x="1083" y="203" fill="#b8c4d4" font-size="12" text-anchor="middle">选 page</text>
+              </svg>
+            </div>
+            <div class="diagram-note">它会先平均 query/head，但历史摘要不是一个 page 一个代表，而是一个 page 里多个 sub-block 代表。</div>
+          </div>
+
+          <div id="viz-masked-quest" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="MaskedQuestSparseAttention diagram">
+                <defs><marker id="maskedQuestArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">MaskedQuestSparseAttention：QUEST 分数上加一个特征维遮罩</text>
+                <rect x="35" y="78" width="180" height="230" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="130" y="112" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">q_h</text>
+                <text x="130" y="142" fill="#b8c4d4" font-size="12" text-anchor="middle">query head</text>
+                <rect x="70" y="170" width="25" height="48" rx="3" fill="#1b2b45" stroke="#6ea8fe"/><rect x="105" y="190" width="25" height="28" rx="3" fill="#1b2b45" stroke="#6ea8fe"/><rect x="140" y="160" width="25" height="58" rx="3" fill="#1b2b45" stroke="#6ea8fe"/>
+                <path d="M225 182 L300 182" stroke="#6f7a88" stroke-width="2" marker-end="url(#maskedQuestArrow)"/>
+                <rect x="300" y="78" width="220" height="230" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="405" y="112" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">max/min 包络</text>
+                <text x="405" y="138" fill="#b8c4d4" font-size="12" text-anchor="middle">和 QUEST 一样</text>
+                <polyline points="330,200 362,165 394,182 426,155 478,175" fill="none" stroke="#f1b95b" stroke-width="4"/>
+                <polyline points="330,250 362,230 394,260 426,235 478,252" fill="none" stroke="#6ea8fe" stroke-width="4"/>
+                <text x="405" y="286" fill="#8fa0b5" font-size="11" text-anchor="middle">上包络 / 下包络</text>
+                <path d="M520 192 L585 192" stroke="#6f7a88" stroke-width="2" marker-end="url(#maskedQuestArrow)"/>
+                <rect x="585" y="78" width="245" height="230" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="708" y="112" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">QUEST 逐维分数</text>
+                <text x="708" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">每维得到一个 score_d</text>
+                <text x="620" y="176" fill="#8fa0b5" font-size="11">d1</text><text x="660" y="176" fill="#8fa0b5" font-size="11">d2</text><text x="700" y="176" fill="#8fa0b5" font-size="11">d3</text><text x="740" y="176" fill="#8fa0b5" font-size="11">d4</text><text x="780" y="176" fill="#8fa0b5" font-size="11">d5</text>
+                <rect x="613" y="190" width="28" height="62" rx="3" fill="#362b19" stroke="#f1b95b"/><rect x="653" y="205" width="28" height="47" rx="3" fill="#362b19" stroke="#f1b95b"/><rect x="693" y="178" width="28" height="74" rx="3" fill="#362b19" stroke="#f1b95b"/><rect x="733" y="218" width="28" height="34" rx="3" fill="#362b19" stroke="#f1b95b"/><rect x="773" y="198" width="28" height="54" rx="3" fill="#362b19" stroke="#f1b95b"/>
+                <path d="M830 192 L890 192" stroke="#6f7a88" stroke-width="2" marker-end="url(#maskedQuestArrow)"/>
+                <rect x="890" y="78" width="165" height="230" rx="8" fill="#3a1c25" stroke="#ef7a8a"/>
+                <text x="973" y="112" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">MaskSlice</text>
+                <text x="973" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">前 MASK_END 维置零</text>
+                <rect x="925" y="180" width="24" height="68" rx="3" fill="#3a1c25" stroke="#ef7a8a"/><line x1="925" y1="248" x2="949" y2="180" stroke="#ef7a8a" stroke-width="2"/>
+                <rect x="958" y="196" width="24" height="52" rx="3" fill="#3a1c25" stroke="#ef7a8a"/><line x1="958" y1="248" x2="982" y2="196" stroke="#ef7a8a" stroke-width="2"/>
+                <rect x="991" y="168" width="24" height="80" rx="3" fill="#362b19" stroke="#f1b95b"/>
+                <text x="973" y="280" fill="#8fa0b5" font-size="11" text-anchor="middle">只保留未遮罩维度求和</text>
+                <path d="M1055 192 L1105 192" stroke="#6f7a88" stroke-width="2" marker-end="url(#maskedQuestArrow)"/>
+                <rect x="1105" y="145" width="45" height="72" rx="8" fill="#14352b" stroke="#68b35a"/>
+                <text x="1128" y="176" fill="#fff" font-size="12" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">它和 QUEST 的主要区别：求和前先屏蔽一部分特征维，避免某些低信号通道影响选块。</div>
+          </div>
+
+          <div id="viz-centered" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="CenteredBlockSparseAttention diagram">
+                <defs><marker id="centeredArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">CenteredBlockSparseAttention：不看绝对分数，看比平均高多少</text>
+                <rect x="35" y="75" width="205" height="230" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="140" y="108" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">先算每个 head 的分</text>
+                <text x="140" y="135" fill="#b8c4d4" font-size="12" text-anchor="middle">q_h · c_p</text>
+                <text x="78" y="171" fill="#8fa0b5" font-size="11">page p</text>
+                <rect x="130" y="152" width="72" height="24" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="166" y="169" fill="#dbe7f3" font-size="10" text-anchor="middle">head0 分</text>
+                <text x="78" y="207" fill="#8fa0b5" font-size="11">page p</text>
+                <rect x="130" y="188" width="72" height="24" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="166" y="205" fill="#dbe7f3" font-size="10" text-anchor="middle">head1 分</text>
+                <text x="78" y="243" fill="#8fa0b5" font-size="11">page p</text>
+                <rect x="130" y="224" width="72" height="24" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="166" y="241" fill="#dbe7f3" font-size="10" text-anchor="middle">head... 分</text>
+                <line x1="92" y1="270" x2="188" y2="270" stroke="#6ea8fe" stroke-width="3"/>
+                <text x="140" y="292" fill="#dbe7f3" font-size="12" text-anchor="middle">Mean(dim=1)</text>
+                <text x="140" y="318" fill="#8fa0b5" font-size="11" text-anchor="middle">得到 page p 的原始分 score_p</text>
+                <path d="M245 180 L330 180" stroke="#6f7a88" stroke-width="2" marker-end="url(#centeredArrow)"/>
+                <rect x="330" y="75" width="300" height="260" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="480" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">同一请求的 page 原始分</text>
+                <line x1="375" y1="250" x2="595" y2="250" stroke="#2b3544"/>
+                <line x1="375" y1="140" x2="375" y2="250" stroke="#2b3544"/>
+                <line x1="385" y1="200" x2="585" y2="200" stroke="#b79cff" stroke-width="2" stroke-dasharray="5 5"/>
+                <rect x="400" y="180" width="28" height="70" fill="#f1b95b"/><text x="414" y="270" fill="#8fa0b5" font-size="10" text-anchor="middle">p0</text>
+                <rect x="448" y="135" width="28" height="115" fill="#f1b95b"/><text x="462" y="270" fill="#8fa0b5" font-size="10" text-anchor="middle">p1</text>
+                <rect x="496" y="220" width="28" height="30" fill="#f1b95b"/><text x="510" y="270" fill="#8fa0b5" font-size="10" text-anchor="middle">p2</text>
+                <rect x="544" y="165" width="28" height="85" fill="#f1b95b"/><text x="558" y="270" fill="#8fa0b5" font-size="10" text-anchor="middle">p3</text>
+                <text x="480" y="310" fill="#b8c4d4" font-size="12" text-anchor="middle">虚线 = 这些 page 的平均分 mean</text>
+                <path d="M630 200 L700 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#centeredArrow)"/>
+                <rect x="700" y="75" width="300" height="260" rx="8" fill="#28223c" stroke="#b79cff"/>
+                <text x="850" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">中心化后的分数</text>
+                <text x="850" y="138" fill="#b8c4d4" font-size="12" text-anchor="middle">centered_p = score_p - mean</text>
+                <line x1="745" y1="220" x2="955" y2="220" stroke="#b79cff" stroke-width="2"/>
+                <rect x="770" y="190" width="28" height="30" fill="#f1b95b"/><text x="784" y="245" fill="#8fa0b5" font-size="10" text-anchor="middle">p0</text>
+                <rect x="818" y="145" width="28" height="75" fill="#f1b95b"/><text x="832" y="245" fill="#8fa0b5" font-size="10" text-anchor="middle">p1</text>
+                <rect x="866" y="220" width="28" height="35" fill="#3a1c25" stroke="#ef7a8a"/><text x="880" y="275" fill="#8fa0b5" font-size="10" text-anchor="middle">p2</text>
+                <rect x="914" y="175" width="28" height="45" fill="#f1b95b"/><text x="928" y="245" fill="#8fa0b5" font-size="10" text-anchor="middle">p3</text>
+                <text x="850" y="310" fill="#dbe7f3" font-size="12" text-anchor="middle">只看谁高出平均线最多</text>
+                <path d="M1000 200 L1060 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#centeredArrow)"/>
+                <rect x="1060" y="145" width="80" height="90" rx="8" fill="#14352b" stroke="#68b35a"/>
+                <text x="1100" y="182" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">topK</text>
+                <text x="1100" y="206" fill="#b8c4d4" font-size="12" text-anchor="middle">突出块</text>
+              </svg>
+            </div>
+            <div class="diagram-note">这个策略适合记成“先画平均线，再挑高出平均线最多的 page”。</div>
+          </div>
+
+          <div id="viz-running" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="RunningAvgBlockSparse diagram">
+                <defs><marker id="runningArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">RunningAvgBlockSparse：每个 page 带一个会延续的 running_score</text>
+                <rect x="35" y="75" width="230" height="230" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="140" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">当前分数</text>
+                <text x="140" y="143" fill="#b8c4d4" font-size="12" text-anchor="middle">q_mean · centroid</text>
+                <text x="150" y="185" fill="#8fa0b5" font-size="11">page0</text><rect x="205" y="166" width="36" height="26" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="223" y="184" fill="#fff" font-size="10" text-anchor="middle">0.4</text>
+                <text x="150" y="225" fill="#8fa0b5" font-size="11">page1</text><rect x="205" y="206" width="36" height="26" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="223" y="224" fill="#fff" font-size="10" text-anchor="middle">0.9</text>
+                <text x="150" y="265" fill="#8fa0b5" font-size="11">page2</text><rect x="205" y="246" width="36" height="26" rx="4" fill="#1b2b45" stroke="#6ea8fe"/><text x="223" y="264" fill="#fff" font-size="10" text-anchor="middle">0.2</text>
+                <path d="M265 190 L330 190" stroke="#6f7a88" stroke-width="2" marker-end="url(#runningArrow)"/>
+                <rect x="330" y="75" width="245" height="230" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="453" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">读取旧 running_score</text>
+                <text x="453" y="143" fill="#b8c4d4" font-size="12" text-anchor="middle">Load(cache["running_score"])</text>
+                <text x="398" y="185" fill="#8fa0b5" font-size="11">old0</text><rect x="448" y="166" width="45" height="26" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="471" y="184" fill="#fff" font-size="10" text-anchor="middle">0.6</text>
+                <text x="398" y="225" fill="#8fa0b5" font-size="11">old1</text><rect x="448" y="206" width="45" height="26" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="471" y="224" fill="#fff" font-size="10" text-anchor="middle">0.3</text>
+                <text x="398" y="265" fill="#8fa0b5" font-size="11">old2</text><rect x="448" y="246" width="45" height="26" rx="4" fill="#12302d" stroke="#56d6bf"/><text x="471" y="264" fill="#fff" font-size="10" text-anchor="middle">0.7</text>
+                <path d="M575 190 L640 190" stroke="#6f7a88" stroke-width="2" marker-end="url(#runningArrow)"/>
+                <rect x="640" y="75" width="270" height="230" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="775" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">融合新旧分数</text>
+                <text x="775" y="143" fill="#b8c4d4" font-size="12" text-anchor="middle">running = 0.5 * old + current</text>
+                <text x="705" y="185" fill="#8fa0b5" font-size="11">page0</text><rect x="760" y="166" width="55" height="26" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="788" y="184" fill="#fff" font-size="10" text-anchor="middle">0.7</text>
+                <text x="705" y="225" fill="#8fa0b5" font-size="11">page1</text><rect x="760" y="206" width="55" height="26" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="788" y="224" fill="#fff" font-size="10" text-anchor="middle">1.05</text>
+                <text x="705" y="265" fill="#8fa0b5" font-size="11">page2</text><rect x="760" y="246" width="55" height="26" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="788" y="264" fill="#fff" font-size="10" text-anchor="middle">0.55</text>
+                <path d="M910 190 L980 190" stroke="#6f7a88" stroke-width="2" marker-end="url(#runningArrow)"/>
+                <rect x="980" y="75" width="150" height="230" rx="8" fill="#28223c" stroke="#b79cff"/>
+                <text x="1055" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">写回 + 选择</text>
+                <text x="1055" y="145" fill="#b8c4d4" font-size="12" text-anchor="middle">Save running_score</text>
+                <text x="1055" y="180" fill="#dbe7f3" font-size="12" text-anchor="middle">用 running 分数</text>
+                <rect x="1018" y="220" width="74" height="36" rx="7" fill="#14352b" stroke="#68b35a"/><text x="1055" y="243" fill="#fff" font-size="13" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">这个策略不只看当前 token 的分数，还把之前步骤的选择倾向保存在 cache 里。</div>
+          </div>
+
+          <div id="viz-venergy" class="strategy-viz-panel">
+            <div class="svg-wrap">
+              <svg width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-label="VEnergyGatedCentroid diagram">
+                <defs><marker id="venergyArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"/></marker></defs>
+                <text x="35" y="34" fill="#dbe7f3" font-size="14" font-weight="700">VEnergyGatedCentroid：key 相似度再乘 value 能量</text>
+                <rect x="35" y="75" width="200" height="250" rx="8" fill="#14243d" stroke="#4d79bd"/>
+                <text x="135" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">query</text>
+                <text x="135" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">Mean(dim=1) 得到 q_mean</text>
+                <rect x="72" y="175" width="126" height="32" rx="5" fill="#1b2b45" stroke="#6ea8fe"/><text x="135" y="196" fill="#dbe7f3" font-size="12" text-anchor="middle">q_mean</text>
+                <path d="M235 200 L300 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#venergyArrow)"/>
+                <rect x="300" y="75" width="230" height="250" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="415" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">key centroid</text>
+                <text x="415" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">CMean(cache["k"])</text>
+                <circle cx="370" cy="200" r="17" fill="#12302d" stroke="#56d6bf"/><text x="370" y="204" fill="#fff" font-size="10" text-anchor="middle">c0</text>
+                <circle cx="415" cy="200" r="17" fill="#12302d" stroke="#56d6bf"/><text x="415" y="204" fill="#fff" font-size="10" text-anchor="middle">c1</text>
+                <circle cx="460" cy="200" r="17" fill="#12302d" stroke="#56d6bf"/><text x="460" y="204" fill="#fff" font-size="10" text-anchor="middle">c2</text>
+                <text x="415" y="260" fill="#8fa0b5" font-size="12" text-anchor="middle">表示每个 page 的 key 像什么</text>
+                <path d="M530 200 L590 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#venergyArrow)"/>
+                <rect x="590" y="75" width="190" height="250" rx="8" fill="#342818" stroke="#d39845"/>
+                <text x="685" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">key 相似度</text>
+                <text x="685" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">dot = q_mean · centroid</text>
+                <text x="635" y="185" fill="#8fa0b5" font-size="11">page0</text><rect x="690" y="166" width="52" height="26" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="716" y="184" fill="#fff" font-size="10" text-anchor="middle">0.8</text>
+                <text x="635" y="225" fill="#8fa0b5" font-size="11">page1</text><rect x="690" y="206" width="52" height="26" rx="4" fill="#362b19" stroke="#f1b95b"/><text x="716" y="224" fill="#fff" font-size="10" text-anchor="middle">0.6</text>
+                <path d="M780 200 L840 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#venergyArrow)"/>
+                <rect x="840" y="75" width="200" height="250" rx="8" fill="#17322f" stroke="#4bb9a8"/>
+                <text x="940" y="110" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">value 能量 gate</text>
+                <text x="940" y="140" fill="#b8c4d4" font-size="12" text-anchor="middle">v_energy = avg ||v_token||</text>
+                <text x="885" y="185" fill="#8fa0b5" font-size="11">page0</text><rect x="940" y="168" width="26" height="22" fill="#12302d" stroke="#56d6bf"/><rect x="970" y="158" width="26" height="32" fill="#12302d" stroke="#56d6bf"/><text x="1010" y="185" fill="#dbe7f3" font-size="11">0.9</text>
+                <text x="885" y="225" fill="#8fa0b5" font-size="11">page1</text><rect x="940" y="215" width="26" height="15" fill="#12302d" stroke="#56d6bf"/><rect x="970" y="210" width="26" height="20" fill="#12302d" stroke="#56d6bf"/><text x="1010" y="225" fill="#dbe7f3" font-size="11">0.3</text>
+                <text x="940" y="282" fill="#8fa0b5" font-size="12" text-anchor="middle">value 分量低会压低 page</text>
+                <path d="M1040 200 L1090 200" stroke="#6f7a88" stroke-width="2" marker-end="url(#venergyArrow)"/>
+                <rect x="1090" y="128" width="60" height="140" rx="8" fill="#14352b" stroke="#68b35a"/>
+                <text x="1120" y="160" fill="#fff" font-size="12" text-anchor="middle" font-weight="700">score</text>
+                <text x="1120" y="188" fill="#b8c4d4" font-size="11" text-anchor="middle">dot ×</text>
+                <text x="1120" y="210" fill="#b8c4d4" font-size="11" text-anchor="middle">energy</text>
+                <text x="1120" y="244" fill="#fff" font-size="12" text-anchor="middle" font-weight="700">topK</text>
+              </svg>
+            </div>
+            <div class="diagram-note">它比普通 centroid 多看了 value：value 能量低的历史块会被 gate 压低。</div>
+          </div>
+          <div class="note">所以“是否对 H_q 平均”不是公共规则。`BlockSparseAttention` 和 `LServeCentroidSparseAttention` 会先平均 query/head；GQA 系列更常见的是每个 head 分开打分后合并；QUEST 系列核心是 max/min 包络，不是 centroid。</div>
+        </div>
+
+        <div class="band">
+          <h2>内置策略横向对照</h2>
+          <div class="strategy-table">
+            <div class="strategy-row">
+              <div class="head">策略类</div>
+              <div class="head">存什么摘要</div>
+              <div class="head">怎么更新摘要</div>
+              <div class="head">怎么打分</div>
+              <div class="head">一句话理解</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>BlockSparseAttention</code></div>
+              <div>每块一个 key 平均值 `centroids`</div>
+              <div>`CMean(cache["k"])`</div>
+              <div>query 平均值和 centroid 点积，再 topK</div>
+              <div>最基础：每块用一个平均代表来选。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>GQABlockSparseAttention</code></div>
+              <div>每块一个 key 平均值 `centroids`</div>
+              <div>`CMean(cache["k"])`</div>
+              <div>每个 head 打分，softmax 后跨 head 取最大</div>
+              <div>让多个 query head 分别投票。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>GQAQuestSparseAttention</code></div>
+              <div>每块 key 的 `max` / `min` 包络</div>
+              <div>`CMax(cache["k"])` 和 `CMin(cache["k"])`</div>
+              <div>用 max/min 估计 query-key 可能的最大相关性</div>
+              <div>不只看平均，而是看这块最多可能多相关。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>LServeSparseAttention</code></div>
+              <div>每个 sub-block 的 `max` / `min`</div>
+              <div>`CMaxInterleave` / `CMinInterleave`</div>
+              <div>大块里再找最相关的小块</div>
+              <div>一整块里只要有局部重要，就可能被选。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>LServeCentroidSparseAttention</code></div>
+              <div>每个 sub-block 的 key 平均值</div>
+              <div>`CMeanInterleave(cache["k"])`</div>
+              <div>query 和所有 sub-block centroid 打分，取最大</div>
+              <div>小块版“平均代表法”。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>MaskedQuestSparseAttention</code></div>
+              <div>每块 key 的 `max` / `min` 包络</div>
+              <div>`CMax` / `CMin`</div>
+              <div>QUEST 分数算完后屏蔽部分特征维</div>
+              <div>只让指定特征参与选块。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>CenteredBlockSparseAttention</code></div>
+              <div>每块一个 key 平均值 `centroids`</div>
+              <div>`CMean(cache["k"])`</div>
+              <div>原始分数减掉本请求平均分，再 topK</div>
+              <div>看“比平均水平高多少”。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>RunningAvgBlockSparse</code></div>
+              <div>`centroids` + 持久 `running_score`</div>
+              <div>centroid 用 `CMean`，running_score 初始化为 0</div>
+              <div>当前分数叠加历史 running score</div>
+              <div>让持续相关的块更容易留下。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>VEnergyGatedCentroid</code></div>
+              <div>`centroids` + `v_energy`</div>
+              <div>key 求均值；value 求 L2 norm 后平均</div>
+              <div>query-centroid 分数乘 value 能量</div>
+              <div>不仅看像不像，也看 value 有没有分量。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>第一段代码应该怎么读</h2>
+          <div class="file-list">
+            <div class="file"><code>from ..indexer import ...</code><span>这些算子只在 `forward_indexer` 里用，用来给历史块打分和 topK。</span></div>
+            <div class="file"><code>from ..cache import ...</code><span>带 `C` 前缀的算子通常在 `forward_cache` 里用，用来更新仓库摘要。</span></div>
+            <div class="file"><code>@register("...")</code><span>给策略起运行时名字，配置里会用这个名字选策略。</span></div>
+            <div class="file"><code>__init__</code><span>提前创建算子对象。注意同语义算子也不能复用，因为每个对象有自己的内部缓冲。</span></div>
+            <div class="file"><code>create_cache</code><span>只声明额外摘要张量形状，不包括框架自动提供的 `k` / `v`。</span></div>
+            <div class="file"><code>forward_cache</code><span>定义摘要怎么从 `k` / `v` 算出来。</span></div>
+            <div class="file"><code>forward_indexer</code><span>定义如何打分、如何把 topK 结果写进输出。</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="code-flow" class="code-panel">
+        <div class="band">
+          <h2>flow.py 解决的问题</h2>
+          <p class="lead">`flow.py` 不写具体策略，它像一份“策略合同”。`algorithms.py` 里的每个策略类，都必须按这里规定的格式回答三个问题。</p>
+          <div class="shape-board">
+            <div class="shape"><strong>策略基类</strong><code>class vFlow(ABC)</code><p>所有普通 K/V 策略都继承它。你可以把它理解成“选块策略模板”。</p></div>
+            <div class="shape"><strong>策略输入</strong><code>q / cache / ctx</code><p>`q` 是当前 attention 想找什么，`cache` 是历史仓库摘要，`ctx` 是本轮草稿纸和配置。</p></div>
+            <div class="shape"><strong>策略输出</strong><code>o</code><p>`o` 不是模型输出文字，而是“挑出来的历史块编号”。后端再按这些编号去读历史。</p></div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>三件必须实现的事</h2>
+          <div class="strategy-table">
+            <div class="strategy-row">
+              <div class="head">函数</div>
+              <div class="head">白话意思</div>
+              <div class="head">读代码时看什么</div>
+              <div class="head">对应 algorithms.py</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>create_cache(block_size, head_dim)</code></div>
+              <div>先声明：每块历史除了 K/V，还要存什么摘要。</div>
+              <div>看返回字典，比如 `{"centroids": (1, head_dim)}`。</div>
+              <div>回答“仓库多放哪些摘要”。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>forward_cache(cache, loc, ctx)</code></div>
+              <div>当前 token 写进 K/V 后，怎么刷新受影响块的摘要。</div>
+              <div>看 `CMean / CMax / CMin / CNorm` 这类 cache 算子。</div>
+              <div>回答“摘要怎么更新”。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>forward_indexer(q, o, cache, ctx)</code></div>
+              <div>用当前 query 和历史摘要打分，选出重点历史块。</div>
+              <div>看 `Mean / GeMM / Max / topK` 这类 indexer 算子。</div>
+              <div>回答“怎么挑块”。</div>
+            </div>
+          </div>
+          <div class="note">第一遍看 `flow.py`，重点不是数学形状，而是确认：Vortex 把一个策略强行拆成“声明摘要、更新摘要、使用摘要选块”三段。</div>
+        </div>
+
+        <div class="band">
+          <h2>最容易混的点：cache 有两种视角</h2>
+          <div class="split">
+            <div class="lane">
+              <div class="lane-title"><b>forward_cache 看到的 cache</b><span>更新仓库摘要</span></div>
+              <div class="flowline">
+                <div class="node cache"><b>按本轮请求看</b><p>形状可以粗略记成 `[B, r, c]`。`B` 表示这批请求里哪些块刚受影响。</p></div>
+                <div class="node cache"><b>做的是刷新</b><p>比如当前块 K/V 变了，就重新算这块的 centroid、max/min、value 能量。</p></div>
+              </div>
+            </div>
+            <div class="lane">
+              <div class="lane-title"><b>forward_indexer 看到的 cache</b><span>挑历史块</span></div>
+              <div class="flowline">
+                <div class="node indexer"><b>按候选历史页看</b><p>形状可以粗略记成 `[S, r, c]`。`S` 表示这一轮可选择的历史页。</p></div>
+                <div class="node indexer"><b>做的是打分</b><p>拿 query 去和每个历史页摘要比较，最后把选中的页写进 `o`。</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="note">同一个历史仓库，在“更新摘要”和“挑历史”时会被看成不同布局。这个映射不是策略类自己手写，主要由 `ctx` 和运行时元数据处理。</div>
+        </div>
+
+        <div class="band">
+          <h2>initialize 在干什么</h2>
+          <div class="pipeline">
+            <div class="stage">
+              <div class="label user">记录配置</div>
+              <div class="body"><b>保存 block_size、head_dim、dtype</b><p>策略后面要知道一块有多少 token、每个 head 维度是多少、缓存是什么 dtype。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label flow">调用 create_cache</div>
+              <div class="body"><b>拿到策略声明的额外摘要</b><p>比如 `centroids`、`max`、`min`、`v_energy`。这里还没有真正跑 attention。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label cache">自动加入 k / v</div>
+              <div class="body"><b>策略不需要自己声明 K/V</b><p>`initialize` 会把标准 `k` 和 `v` 塞进 `cache_meta_info`，所以 `create_cache` 里不能返回 `k` 或 `v`。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label trace">计算 token_ratio</div>
+              <div class="body"><b>粗略估计这个策略额外占多少缓存</b><p>摘要越多，仓库越大。这个值用来做内存成本估计。</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>flow.py 建议阅读顺序</h2>
+          <div class="file-list">
+            <div class="file"><code>class vFlow</code><span>先看大 docstring，知道这个文件规定的是“策略接口”。</span></div>
+            <div class="file"><code>forward_indexer</code><span>重点看输入输出：`q` 是问题，`o` 是选中的历史块，`cache` 是历史摘要。</span></div>
+            <div class="file"><code>forward_cache</code><span>重点看它更新的是仓库摘要，不是直接生成 token。</span></div>
+            <div class="file"><code>create_cache</code><span>重点看它只声明额外摘要形状，不分配真实 tensor。</span></div>
+            <div class="file"><code>initialize</code><span>最后看：它把策略声明变成运行时能分配的 cache metadata。</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="code-backend" class="code-panel">
+        <div class="band">
+          <h2>flashinfer.py 先明确一件事</h2>
+          <p class="lead">这个文件不是 FlashInfer 库本体，而是 Vortex 接到 SGLang/FlashInfer 的“适配器”。它负责准备草稿纸、调用编译好的选块工具，再把结果交给 FlashInfer 真正算 attention。</p>
+          <div class="shape-board">
+            <div class="shape"><strong>不是策略文件</strong><code>forward_indexer 不在这里写</code><p>具体怎么打分选块，在 `algorithms.py` 的策略类里。</p></div>
+            <div class="shape"><strong>是运行时入口</strong><code>VortexFlashInferBackend</code><p>它决定什么时候 plan、什么时候更新 cache、什么时候调用 compiled_indexer。</p></div>
+            <div class="shape"><strong>是后端包装</strong><code>BatchDecodeWithPagedKVCacheWrapper</code><p>最后真正 attention 计算交给 FlashInfer wrapper。</p></div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>这个文件的三段主线</h2>
+          <div class="strategy-table">
+            <div class="strategy-row">
+              <div class="head">位置</div>
+              <div class="head">白话意思</div>
+              <div class="head">你要抓的关键点</div>
+              <div class="head">别先深究</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>__init__</code></div>
+              <div>启动时读模型配置，创建各种 buffer 和 FlashInfer wrapper。</div>
+              <div>`block_size`、`page_size`、`decode_wrappers`、`plan_decode`、`self.ctx = Context()`。</div>
+              <div>大量 buffer 形状，第一遍不用逐个背。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>_compile</code></div>
+              <div>启动时把 `forward_indexer` trace 一遍，然后编译成 `compiled_indexer`。</div>
+              <div>dummy `q/o/cache`、`MetaData.preallocate`、`compile_indexer(self.ctx)()`。</div>
+              <div>compiler 内部怎么生成 Triton/CUDA，先放后面。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>init_forward_metadata</code></div>
+              <div>每个 decode batch 开始前，先填本轮草稿纸。</div>
+              <div>`plan_decode(..., ctx=self.ctx)` 写 dense/sparse indptr、indices、last_page_len 等元数据。</div>
+              <div>prefill 分支可以之后再看，先看 decode。</div>
+            </div>
+            <div class="strategy-row">
+              <div><code>forward_decode</code></div>
+              <div>每层 decode 真正执行：写 K/V、更新摘要、选块、算 attention。</div>
+              <div>`set_kv_buffer`、`get_cache`、`compiled_indexer.forward`、FlashInfer `forward`。</div>
+              <div>CUDA graph 相关函数先跳过。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="band">
+          <h2>decode 时真实顺序</h2>
+          <div class="pipeline">
+            <div class="stage">
+              <div class="label flow">每批开始</div>
+              <div class="body"><b>`init_forward_metadata` 调 `plan_decode`</b><p>先把本轮请求的历史范围、dense/sparse 输出位置、页长度这些信息写到 `ctx.metadata`。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label cache">每层 decode</div>
+              <div class="body"><b>`set_kv_buffer(...)` 写入当前 K/V</b><p>这个调用在 memory pool 里不仅写 K/V，还会触发 `compiled_cache.forward(...)` 更新仓库摘要。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label trace">读取仓库</div>
+              <div class="body"><b>`get_cache(layer.layer_id)` 拿到 K/V 和摘要</b><p>这里拿到的是后面 indexer 和 attention 都要用的历史仓库视图。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label kernel">挑历史</div>
+              <div class="body"><b>`compiled_indexer.forward(q, o, cache, ctx)`</b><p>读 query、仓库摘要和草稿纸，把选中的 sparse 历史页写到 FlashInfer wrapper 会读取的 buffer 里。</p></div>
+            </div>
+            <div class="arrow">down</div>
+            <div class="stage">
+              <div class="label runtime">算 attention</div>
+              <div class="body"><b>`decode_wrappers[1].forward(...)`</b><p>FlashInfer 根据 sparse indices 去读选中的 K/V 页，算出 attention 输出。</p></div>
+            </div>
+          </div>
+          <div class="note">所以这页和前面的概念图一致：草稿纸先 plan；当前 K/V 入库并更新摘要；再用 `compiled_indexer` 挑历史；最后 attention 预测下一个 token。</div>
+        </div>
+
+        <div class="band">
+          <h2>草稿纸和仓库在这里怎么出现</h2>
+          <div class="split">
+            <div class="lane">
+              <div class="lane-title"><b>草稿纸：ctx.metadata</b><span>每轮会改</span></div>
+              <div class="flowline">
+                <div class="node indexer"><b>`MetaData.preallocate(...)`</b><p>启动时先分配一大块可复用 buffer。</p></div>
+                <div class="node indexer"><b>`plan_decode(...)`</b><p>每个 batch 把这轮请求的 indptr、indices、last_page_len 等写进去。</p></div>
+                <div class="node indexer"><b>`compiled_indexer.forward(...)`</b><p>继续把 sparse 选择结果写到这里，给 FlashInfer 读。</p></div>
+              </div>
+            </div>
+            <div class="lane">
+              <div class="lane-title"><b>仓库：token_to_kv_pool</b><span>历史会增长</span></div>
+              <div class="flowline">
+                <div class="node cache"><b>`set_kv_buffer(...)`</b><p>把当前 token 的 K/V 写进历史仓库。</p></div>
+                <div class="node cache"><b>`compiled_cache.forward(...)`</b><p>按策略刷新这块历史的摘要。</p></div>
+                <div class="node cache"><b>`get_cache(...)`</b><p>把 K/V 和摘要交给 indexer、attention 使用。</p></div>
+              </div>
+            </div>
+          </div>
+          <div class="note">最短记法：`ctx.metadata` 是本轮草稿纸；`token_to_kv_pool` 是长期历史仓库。`compiled_indexer` 不“包含”仓库，它是拿仓库和草稿纸来计算。</div>
+        </div>
+
+        <div class="band">
+          <h2>flashinfer.py 建议阅读顺序</h2>
+          <div class="file-list">
+            <div class="file"><code>__init__</code><span>先找 `block_size`、`decode_wrappers`、`plan_decode`、`self.ctx`，知道工具在哪里创建。</span></div>
+            <div class="file"><code>_compile</code><span>看 Vortex 怎么用 dummy tensor trace `forward_indexer`，然后得到 `compiled_indexer`。</span></div>
+            <div class="file"><code>init_forward_metadata</code><span>只看 decode 分支，确认 `plan_decode` 负责填写本轮草稿纸。</span></div>
+            <div class="file"><code>forward_decode</code><span>重点看真实顺序：写 K/V 与更新摘要 -> `compiled_indexer.forward` -> FlashInfer attention。</span></div>
+            <div class="file"><code>forward_extend</code><span>这是 prefill/extend 路径，等 decode 主线看懂后再看。</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="studymap" class="page">
+    <div class="band">
+      <h2>代码学习地图：系统层 -> 文件层 -> 函数层</h2>
+      <p class="lead">参考 `flashinfer-trace/pipeline_flow_current.html` 的编排：先看系统总览，点系统层看文件关系，再点具体文件看函数逻辑。以后隔几天回来，先从这里恢复上下文。</p>
+      <div class="study-status">
+        <div class="unit"><strong>已经看过</strong><p>flow、abs、indexer ops、context/metadata、select、compiler/graph 前半。</p></div>
+        <div class="unit"><strong>当前停在</strong><p><code>indexer/compiler/graph.py</code>，下一块应看 <code>_build_op_dag</code>。</p></div>
+        <div class="unit"><strong>先别跳</strong><p>不要马上进 codegen；先把 graph.py 的阶段关系补齐。</p></div>
+        <div class="unit"><strong>看图规则</strong><p>系统层看“谁接谁”，文件层看“文件职责”，函数层看“函数怎么串起来”。</p></div>
+      </div>
+    </div>
+
+    <div class="band">
+      <h2>系统层总览</h2>
+      <div class="study-map" id="studyMap"></div>
+    </div>
+
+    <div class="study-detail" id="studyDetail"></div>
+  </section>
+
+  <section id="files" class="page">
+    <div class="band">
+      <h2>项目结构关系图</h2>
+      <div class="svg-wrap">
+        <svg width="1080" height="540" viewBox="0 0 1080 540" role="img" aria-label="vortex_torch source structure diagram">
+          <defs>
+            <marker id="structArrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto">
+              <polygon points="0 0, 8 3.5, 0 7" fill="#6f7a88"></polygon>
+            </marker>
+          </defs>
+
+          <rect x="35" y="35" width="220" height="86" rx="7" fill="#17322f" stroke="#4bb9a8"/>
+          <text x="145" y="67" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">flow/</text>
+          <text x="145" y="91" fill="#b8c4d4" font-size="12" text-anchor="middle">写选块策略</text>
+          <text x="145" y="110" fill="#8fa0b5" font-size="11" text-anchor="middle">algorithms.py / flow.py</text>
+
+          <rect x="330" y="35" width="220" height="86" rx="7" fill="#1e2532" stroke="#6f7a88"/>
+          <text x="440" y="67" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">abs/</text>
+          <text x="440" y="91" fill="#b8c4d4" font-size="12" text-anchor="middle">把策略记录成图</text>
+          <text x="440" y="110" fill="#8fa0b5" font-size="11" text-anchor="middle">tensor.py / op.py</text>
+
+          <rect x="625" y="35" width="220" height="86" rx="7" fill="#342818" stroke="#d39845"/>
+          <text x="735" y="67" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">compiler/</text>
+          <text x="735" y="91" fill="#b8c4d4" font-size="12" text-anchor="middle">把图变成快代码</text>
+          <text x="735" y="110" fill="#8fa0b5" font-size="11" text-anchor="middle">indexer/compiler + cache/compiler</text>
+
+          <path d="M255 78 L330 78" stroke="#6f7a88" stroke-width="2" marker-end="url(#structArrow)"/>
+          <path d="M550 78 L625 78" stroke="#6f7a88" stroke-width="2" marker-end="url(#structArrow)"/>
+
+          <rect x="35" y="190" width="240" height="96" rx="7" fill="#14243d" stroke="#4d79bd"/>
+          <text x="155" y="222" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">cache/</text>
+          <text x="155" y="246" fill="#b8c4d4" font-size="12" text-anchor="middle">更新历史仓库摘要</text>
+          <text x="155" y="267" fill="#8fa0b5" font-size="11" text-anchor="middle">forward_cache 的算子和编译器</text>
+
+          <rect x="330" y="190" width="240" height="96" rx="7" fill="#362b19" stroke="#d39845"/>
+          <text x="450" y="222" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">indexer/</text>
+          <text x="450" y="246" fill="#b8c4d4" font-size="12" text-anchor="middle">给历史块打分并 topK</text>
+          <text x="450" y="267" fill="#8fa0b5" font-size="11" text-anchor="middle">forward_indexer 的算子和草稿纸</text>
+
+          <rect x="625" y="190" width="240" height="96" rx="7" fill="#3a1c25" stroke="#d66a7b"/>
+          <text x="745" y="222" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">custom_ops/</text>
+          <text x="745" y="246" fill="#b8c4d4" font-size="12" text-anchor="middle">特殊高速小工具</text>
+          <text x="745" y="267" fill="#8fa0b5" font-size="11" text-anchor="middle">topK / softmax / Union 等</text>
+
+          <path d="M145 121 C145 150 155 160 155 190" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M440 121 C440 150 450 160 450 190" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M735 121 C735 150 745 160 745 190" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M570 238 L625 238" stroke="#6f7a88" stroke-width="2" marker-end="url(#structArrow)"/>
+
+          <rect x="35" y="360" width="270" height="96" rx="7" fill="#3a1c25" stroke="#d66a7b"/>
+          <text x="170" y="392" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">engine/sgl/memory_pool.py</text>
+          <text x="170" y="416" fill="#b8c4d4" font-size="12" text-anchor="middle">真正的历史仓库</text>
+          <text x="170" y="437" fill="#8fa0b5" font-size="11" text-anchor="middle">写 K/V，调用 compiled_cache</text>
+
+          <rect x="380" y="360" width="300" height="96" rx="7" fill="#14352b" stroke="#68b35a"/>
+          <text x="530" y="392" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">engine/sgl/attention_backend/</text>
+          <text x="530" y="416" fill="#b8c4d4" font-size="12" text-anchor="middle">Vortex 后端适配器</text>
+          <text x="530" y="437" fill="#8fa0b5" font-size="11" text-anchor="middle">准备草稿纸，调用 indexer 和 attention</text>
+
+          <rect x="755" y="360" width="270" height="96" rx="7" fill="#14352b" stroke="#68b35a"/>
+          <text x="890" y="392" fill="#fff" font-size="15" text-anchor="middle" font-weight="700">外部 attention 库</text>
+          <text x="890" y="416" fill="#b8c4d4" font-size="12" text-anchor="middle">FlashInfer / TRT-LLM / MLA</text>
+          <text x="890" y="437" fill="#8fa0b5" font-size="11" text-anchor="middle">真正执行 attention 计算</text>
+
+          <path d="M155 286 C155 320 170 330 170 360" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M450 286 C450 320 530 330 530 360" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M745 286 C745 320 530 330 530 360" stroke="#6f7a88" stroke-width="2" fill="none" marker-end="url(#structArrow)"/>
+          <path d="M305 408 L380 408" stroke="#6f7a88" stroke-width="2" marker-end="url(#structArrow)"/>
+          <path d="M680 408 L755 408" stroke="#6f7a88" stroke-width="2" marker-end="url(#structArrow)"/>
+
+          <text x="170" y="500" fill="#8fa0b5" font-size="12" text-anchor="middle">cache 改仓库摘要</text>
+          <text x="530" y="500" fill="#8fa0b5" font-size="12" text-anchor="middle">indexer 改草稿纸里的 sparse 结果</text>
+          <text x="890" y="500" fill="#8fa0b5" font-size="12" text-anchor="middle">后端读结果去算 attention</text>
+        </svg>
+      </div>
+      <div class="note">读图顺序：先看上面三块理解“策略如何被记录和编译”，再看中间三块理解“cache 更新仓库、indexer 挑块、custom_ops 提供特殊工具”，最后看底部理解它们如何接进 SGLang 运行时。</div>
+    </div>
+
+    <div class="band">
+      <h2>源码应该按什么顺序看</h2>
+      <div class="file-list">
+        <div class="file"><code>vortex_torch/flow/algorithms.py</code><span>第一站：看内置策略怎么写。先看 `block_sparse_attention`，它最基础。</span></div>
+        <div class="file"><code>vortex_torch/flow/flow.py</code><span>第二站：看一个策略类必须提供哪几个函数。</span></div>
+        <div class="file"><code>vortex_torch/indexer/output_func.py</code><span>第三站：看最后怎么 topK，怎么输出被选中的块。</span></div>
+        <div class="file"><code>vortex_torch/cache/*</code><span>第四站：看历史摘要怎么被保存、更新。</span></div>
+        <div class="file"><code>vortex_torch/indexer/*</code><span>第五站：看如何根据 query 和摘要给历史块打分。</span></div>
+        <div class="file"><code>vortex_torch/engine/sgl/*</code><span>最后再看：怎么接到 SGLang 的真实推理流程里。</span></div>
+        <div class="file"><code>vortex_torch/*/compiler/*</code><span>暂时放后面：这是把策略编译成 GPU 快代码的部分，比较难。</span></div>
+        <div class="file"><code>vortex_torch/custom_ops/*</code><span>暂时放最后：这是 topK、softmax 等高速小工具的实现。</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const tabs = Array.from(document.querySelectorAll(".tab"));
+const pages = Array.from(document.querySelectorAll(".page"));
+const codeTabs = Array.from(document.querySelectorAll(".code-tab"));
+const codePanels = Array.from(document.querySelectorAll(".code-panel"));
+const strategyVizTabs = Array.from(document.querySelectorAll(".strategy-viz-tab"));
+const strategyVizPanels = Array.from(document.querySelectorAll(".strategy-viz-panel"));
+
+function activate(name) {
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.page === name));
+  pages.forEach(p => p.classList.toggle("active", p.id === name));
+  const url = new URL(window.location.href);
+  url.hash = name;
+  history.replaceState(null, "", url);
+}
+
+tabs.forEach(tab => {
+  tab.addEventListener("click", () => activate(tab.dataset.page));
+});
+
+function activateCode(name) {
+  codeTabs.forEach(t => t.classList.toggle("active", t.dataset.codePage === name));
+  codePanels.forEach(p => p.classList.toggle("active", p.id === name));
+}
+
+codeTabs.forEach(tab => {
+  tab.addEventListener("click", () => activateCode(tab.dataset.codePage));
+});
+
+function activateStrategyViz(name) {
+  strategyVizTabs.forEach(t => t.classList.toggle("active", t.dataset.strategyViz === name));
+  strategyVizPanels.forEach(p => p.classList.toggle("active", p.id === name));
+}
+
+strategyVizTabs.forEach(tab => {
+  tab.addEventListener("click", () => activateStrategyViz(tab.dataset.strategyViz));
+});
+
+const studyModules = [
+  {
+    id: "flow",
+    title: "flow/",
+    summary: "策略层：定义怎么存摘要、怎么更新摘要、怎么选历史块。",
+    relation: "用户写的策略类先继承 flow.py 的基类，再在 algorithms.py 里用 indexer/cache 算子拼出 forward_indexer / forward_cache。",
+    files: [
+      {
+        id: "algorithms",
+        name: "flow/algorithms.py",
+        role: "内置选块策略集合。你最早就是从这里理解 BlockSparse、GQA、QUEST、LServe 等策略。",
+        x: 35, y: 90, w: 190,
+        steps: [
+          ["__init__", "声明这个策略要用哪些算子，例如 Mean / GeMM / Max / topK / CMean。"],
+          ["create_cache", "告诉框架每个历史 page 要额外存什么摘要。"],
+          ["forward_cache", "当前 token 写入 KV cache 后，更新受影响 page 的摘要。"],
+          ["forward_indexer", "拿 query 和摘要打分，最后调用 topK 写出被选中的 page。"]
+        ]
+      },
+      {
+        id: "flowpy",
+        name: "flow/flow.py",
+        role: "策略基类。规定一个策略必须长什么样，也规定 q/o/cache 的逻辑形状。",
+        x: 295, y: 90, w: 190,
+        steps: [
+          ["vFlow", "普通 attention 策略基类，定义 create_cache / forward_cache / forward_indexer。"],
+          ["get_cache_meta_info", "把用户声明的额外摘要和标准 k/v 组合起来。"],
+          ["get_token_ratio", "估算额外 cache 摘要相对标准 K/V cache 的存储比例。"],
+          ["initialize", "运行前把 block_size、head_dim、dtype 等上下文参数写进策略对象。"]
+        ]
+      },
+      {
+        id: "loader",
+        name: "flow/loader.py",
+        role: "根据注册名构造策略实例，也支持先执行用户文件触发 @register。",
+        x: 555, y: 30, w: 190,
+        steps: [
+          ["_exec_user_file", "用 importlib 执行用户策略文件，让文件里的 @register 生效。"],
+          ["build_vflow", "按 selected 名字从 registry 取类，校验构造参数，然后实例化策略。"],
+          ["异常包装", "加载失败抛 FlowLoadError，构造失败抛 FlowInitError。"]
+        ]
+      },
+      {
+        id: "registry",
+        name: "flow/registry.py",
+        role: "全局注册表，把字符串名字映射到具体 vFlow/vFlowMLA 子类。",
+        x: 555, y: 180, w: 190,
+        steps: [
+          ["register(name)", "返回装饰器，把类登记到 _REGISTRY[name]。"],
+          ["deco(cls)", "检查 cls 必须继承 vFlow/vFlowMLA，并防止重复注册名。"],
+          ["get(name)", "根据字符串取回策略类；找不到就抛 RegistryError。"]
+        ]
+      }
+    ],
+    edges: [["algorithms", "flowpy"], ["loader", "registry"], ["loader", "flowpy"], ["registry", "algorithms"]]
+  },
+  {
+    id: "abs",
+    title: "abs/",
+    summary: "抽象层：vOp 负责算子接口，vTensor 负责没有真实数据的图上 tensor。",
+    relation: "flow 里的策略调用 indexer 算子时，算子通过 vOp.profile 产出 vTensor，并把 op/tensor 关系写进 ctx。",
+    files: [
+      {
+        id: "op",
+        name: "abs/op.py",
+        role: "所有算子的基类。你之前重点看了 profile/execute 的区别。",
+        x: 160, y: 90, w: 210,
+        steps: [
+          ["profile", "trace/profile 阶段必须实现：检查形状、创建 vTensor、登记图结构。"],
+          ["execute", "可选 eager 路径；多数算子只走编译/codegen，不实现就会抛错。"],
+          ["__call__", "根据 ctx.mode 分发到 profile 或 execute。"]
+        ]
+      },
+      {
+        id: "tensor",
+        name: "abs/tensor.py",
+        role: "vTensor 定义。它没有 GPU/CPU 真实数据，只记录 shape/dtype/format/tensor_id。",
+        x: 430, y: 90, w: 230,
+        steps: [
+          ["vTensor.__init__", "保存 shape、padded_shape、dtype、device、format、tensor_id。"],
+          ["shape helpers", "dim/ndim/numel/size 让它行为像普通 tensor 的元数据部分。"],
+          ["as_vtensor", "把 torch.Tensor 或 vTensor 统一转成图构建阶段能处理的 vTensor。"]
+        ]
+      }
+    ],
+    edges: [["op", "tensor"]]
+  },
+  {
+    id: "indexerops",
+    title: "indexer ops/",
+    summary: "算子层：GeMM、reduce、softmax、elementwise、topK 等都在 profile 阶段登记进 ctx。",
+    relation: "这些文件基本都是同一种套路：检查输入 -> 推导输出格式/形状 -> 创建 output_buffer(vTensor) -> 写入 ctx 的图结构列表。",
+    files: [
+      {
+        id: "matmul",
+        name: "indexer/matmul.py",
+        role: "GeMM：query 和 page 摘要做矩阵乘/点积打分。",
+        x: 35, y: 80, w: 170,
+        steps: [["__init__", "设置 schedule 和输入/输出 format 分发表。"], ["profile", "检查 3D 输入形状，推导输出 [S, Ny, Nx]。"], ["登记 ctx", "把输出 vTensor、op、输入输出边写进 ctx。"]]
+      },
+      {
+        id: "reduce",
+        name: "indexer/reduce.py",
+        role: "Mean/Max/Sum 等 reduce 类算子；具体逻辑由 op_type/tag 区分。",
+        x: 235, y: 80, w: 170,
+        steps: [["__init__", "记录 dim 和 op_type；dim=0 常是 S 轴特殊调度。"], ["profile", "检查输入 3D，按 dim 推导输出形状。"], ["codegen 区分", "真正 reduce 逻辑不在这个类里，而在 compiler/custom op 根据 op_type 生成。"]]
+      },
+      {
+        id: "scan",
+        name: "indexer/scan.py",
+        role: "Softmax/Normalize 这类沿 S 轴或内部轴扫描的算子。",
+        x: 435, y: 80, w: 170,
+        steps: [["Softmax", "常见 dim=0，按每个请求片段内部做 softmax。"], ["scale", "softmax 前缩放分数，避免分布过尖。"], ["profile", "输出同形状 vTensor，并登记 op 图。"]]
+      },
+      {
+        id: "miscops",
+        name: "mask/kron/reshape/transpose",
+        role: "辅助形状和过滤算子。你已经看过它们主要差异在 profile 中的形状推导。",
+        x: 635, y: 80, w: 190,
+        steps: [["mask", "按维度屏蔽一部分分数。"], ["kron", "组合两个内部维度形状。"], ["reshape/transpose", "只改变元数据视图，核心是检查 numel 或交换内部维度。"]]
+      },
+      {
+        id: "output",
+        name: "indexer/output_func.py",
+        role: "最后输出选择结果。topK/approxTopK 把 page id 写进输出 o。",
+        x: 335, y: 230, w: 190,
+        steps: [["topK", "精确选择每个请求分数最高的 K 个 page。"], ["approxTopK", "用 tolerate_ratio 允许最后一小段不再精细比较，换速度。"], ["RAGGED", "必须处理每个请求候选 page 数不同的 S 轴。"]]
+      }
+    ],
+    edges: [["matmul", "reduce"], ["reduce", "scan"], ["scan", "miscops"], ["scan", "output"], ["miscops", "output"]]
+  },
+  {
+    id: "runtime",
+    title: "indexer runtime/",
+    summary: "运行上下文层：ctx、metadata、SGLang 工具和 select.TopK。",
+    relation: "context.py 保存图构建草稿和运行参数；metadata.py 保存每轮 batch 的草稿纸；utils/select 负责对接后端需要的特殊 buffer。",
+    files: [
+      {
+        id: "context",
+        name: "indexer/context.py",
+        role: "ctx 本体。里面既有运行参数，也有 trace/profile 阶段记录计算图的列表。",
+        x: 80, y: 90, w: 190,
+        steps: [["__slots__/类型标注", "声明 ctx 会有哪些字段，避免乱加属性。"], ["create", "根据 server args / model config 初始化 page、block、head、topK 等参数。"], ["图记录列表", "tensor_list/op_list/op_to_input 等列表记录 profile 阶段的计算图。"]]
+      },
+      {
+        id: "metadata",
+        name: "indexer/metadata.py",
+        role: "每轮请求的草稿纸，存 indptr、indices、workload、block table 等运行时 buffer。",
+        x: 330, y: 90, w: 190,
+        steps: [["preallocate", "启动时按最大 batch/page/workload 预分配可复用 buffer。"], ["plan_decode", "每轮 decode 写入本轮请求的 page 范围和 sparse 输出位置。"], ["backend view", "FlashInfer 看 CSR，TRTLLM 看 block table + seqlens。"]]
+      },
+      {
+        id: "utils",
+        name: "indexer/utils_sglang.py",
+        role: "SGLang/CUDA 扩展工具函数工厂，加载底层 module 并返回 Python wrapper。",
+        x: 580, y: 35, w: 190,
+        steps: [["get module", "加载/编译底层 extension module。"], ["factory", "返回闭包函数，把 Python 参数整理后调用 module.xxx。"], ["真实执行", "例如 Chunkwise_NH2HN_Transpose 最终由底层 module 干活。"]]
+      },
+      {
+        id: "select",
+        name: "indexer/select.py",
+        role: "TRTLLM 风格 topK 输出，把选择结果整理成 block_table + seqlens 两个 buffer。",
+        x: 580, y: 190, w: 190,
+        steps: [["TopK(k)", "中间类选择算子，只服务需要 2D block table 的 backend。"], ["两个 buffer", "block_tables_buffer 保存表，seqlens_buffer 保存每个请求长度。"], ["和 output_func 区别", "FlashInfer 用 CSR indices；TRTLLM 需要二维表。"]]
+      }
+    ],
+    edges: [["context", "metadata"], ["metadata", "select"], ["utils", "select"], ["context", "select"]]
+  },
+  {
+    id: "compilergraph",
+    title: "compiler/graph.py",
+    summary: "当前正在看：把 ctx 草稿图整理成 full_graph 和可编译 subgraphs。",
+    relation: "这层不是算数学，而是整理计算图：筛选活 op、检查 fusion 安全性、把 global id 重编号为 local id。",
+    files: [
+      {
+        id: "datastruct",
+        name: "UnionFind / OpDAG / SubgraphDAG",
+        role: "graph.py 的三个工具结构：分组、op 依赖图、subgraph 依赖图。",
+        x: 35, y: 90, w: 210,
+        steps: [["UnionFind", "记录哪些 op 已经属于同一个融合组。"], ["OpDAG", "保存 op -> op 的依赖关系。"], ["SubgraphDAG", "把 op 图压缩成 subgraph 图，检查 merge 会不会成环。"]]
+      },
+      {
+        id: "localgraph",
+        name: "_build_local_graph",
+        role: "已经讲完并写进代码注释：把全局大图里一批 op 切成局部 Graph。",
+        x: 285, y: 90, w: 210,
+        steps: [["收集", "收集 selected op 用到的 input/output tensor。"], ["重编号", "global op/tensor id 映射成 local id。"], ["打包", "构造 local tensor/op 表和 Graph 输入输出边界。"]]
+      },
+      {
+        id: "opdag",
+        name: "_build_op_dag",
+        role: "下一块要看：从最终输出反向追踪，找出真正需要保留的 op，并建 OpDAG。",
+        x: 535, y: 90, w: 210,
+        steps: [["终点", "从 attention 输出、孤立 sink、Save 副作用 op 开始。"], ["反向 DFS", "沿 tensor producer 关系往前找依赖。"], ["建边", "把 producer/consumer tensor 关系转成 op -> op 边。"]]
+      },
+      {
+        id: "fuse",
+        name: "_fuse_w_ops",
+        role: "融合 W 调度算子，减少 kernel 数量，但必须不形成环。",
+        x: 160, y: 230, w: 210,
+        steps: [["找 W", "只考虑 Schedule.W 的 op/subgraph。"], ["can_merge_bidir", "检查 A/B 之间有没有绕路依赖。"], ["union", "安全就用 UnionFind 合并分组。"]]
+      },
+      {
+        id: "allgraphs",
+        name: "_build_all_graphs / contruct_graph",
+        role: "主入口把前面几步串起来，返回 full_graph 和 subgraphs。",
+        x: 465, y: 230, w: 230,
+        steps: [["contruct_graph", "从 ctx 取图记录，计算 final_output_tensor_ids。"], ["_build_all_graphs", "按 UnionFind 分组，做 subgraph topo sort。"], ["返回", "full_graph 给整体视角，subgraphs 给后续 codegen。"]]
+      }
+    ],
+    edges: [["datastruct", "localgraph"], ["localgraph", "opdag"], ["opdag", "fuse"], ["fuse", "allgraphs"]]
+  },
+  {
+    id: "next",
+    title: "下一站",
+    summary: "graph.py 完成后再看 compiler/codegen.py、interface.py 和 custom_ops。",
+    relation: "Graph 只是正式图纸；下一站才是把图纸变成 Triton/CUDA 代码。",
+    files: [
+      {
+        id: "codegen",
+        name: "indexer/compiler/codegen.py",
+        role: "后面看：根据 Graph 生成 Triton kernel 或调用特殊 custom op。",
+        x: 90, y: 90, w: 210,
+        steps: [["读 Graph", "读取 subgraph 的 op/tensor/input/output。"], ["生成代码", "按 Schedule.W/S 走不同 codegen 路径。"], ["输出函数", "生成 compiled_indexer 会调用的 Python/Triton 代码。"]]
+      },
+      {
+        id: "interface",
+        name: "indexer/compiler/interface.py",
+        role: "后面看：生成 subgraph wrapper 和最终入口类。",
+        x: 360, y: 90, w: 210,
+        steps: [["subgraph func", "每个 subgraph 生成 impl/interface。"], ["entry point", "按 topo 顺序调用所有 subgraph。"], ["compiled class", "包装成 runtime 可调用对象。"]]
+      },
+      {
+        id: "customops",
+        name: "custom_ops/",
+        role: "最后看：topK、softmax、reduce_dim0 等高性能专用实现。",
+        x: 630, y: 90, w: 210,
+        steps: [["SPEC", "先看每个 custom op 的输入输出约定。"], ["template/default", "看不同 backend 的实现模板。"], ["被 compiler 调用", "compiler 遇到特殊 op 时插入对应调用。"]]
+      }
+    ],
+    edges: [["codegen", "interface"], ["interface", "customops"]]
+  }
+];
+
+function studyEsc(s) {
+  return String(s).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
+function renderStudyMap(activeId) {
+  const root = document.getElementById("studyMap");
+  if (!root) return;
+  root.innerHTML = studyModules.map(m => (
+    `<button class="study-card ${m.id === activeId ? "active" : ""}" data-study-module="${m.id}">` +
+      `<strong>${studyEsc(m.title)}</strong><span>${studyEsc(m.summary)}</span>` +
+    `</button>`
+  )).join("");
+  root.querySelectorAll("[data-study-module]").forEach(btn => {
+    btn.addEventListener("click", () => renderStudyDetail(btn.dataset.studyModule));
+  });
+}
+
+function renderStudyRelation(mod, activeFileId) {
+  const nodeHtml = mod.files.map(f => (
+    `<button class="study-file-node ${f.id === activeFileId ? "active" : ""}" ` +
+      `data-study-file="${f.id}" style="left:${f.x}px;top:${f.y}px;width:${f.w}px;">` +
+      `<strong>${studyEsc(f.name)}</strong><small>${studyEsc(f.role)}</small>` +
+    `</button>`
+  )).join("");
+  const paths = mod.edges.map((edge, idx) => {
+    const a = mod.files.find(f => f.id === edge[0]);
+    const b = mod.files.find(f => f.id === edge[1]);
+    if (!a || !b) return "";
+    const ax = a.x + a.w;
+    const ay = a.y + 34;
+    const bx = b.x;
+    const by = b.y + 34;
+    return `<path d="M${ax},${ay} C${ax + 45},${ay} ${bx - 45},${by} ${bx},${by}" stroke="#6f7a88" stroke-width="1.7" fill="none" marker-end="url(#studyArrow${mod.id}${idx})"></path>` +
+      `<defs><marker id="studyArrow${mod.id}${idx}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6f7a88"></path></marker></defs>`;
+  }).join("");
+  return `<div class="study-relation-wrap"><div class="study-relation"><svg viewBox="0 0 820 350" aria-hidden="true">${paths}</svg>${nodeHtml}</div></div>`;
+}
+
+function renderStudyFunction(file) {
+  return `<h3>${studyEsc(file.name)}</h3>` +
+    `<p class="lead">${studyEsc(file.role)}</p>` +
+    `<div class="study-function-flow">` +
+      file.steps.map(step => (
+        `<div class="study-function-step"><b>${studyEsc(step[0])}</b><p>${studyEsc(step[1])}</p></div>`
+      )).join("") +
+    `</div>`;
+}
+
+function renderStudyDetail(moduleId, fileId) {
+  const mod = studyModules.find(m => m.id === moduleId) || studyModules[0];
+  const activeFile = mod.files.find(f => f.id === fileId) || mod.files[0];
+  renderStudyMap(mod.id);
+  const panel = document.getElementById("studyDetail");
+  if (!panel) return;
+  panel.innerHTML =
+    `<h3>${studyEsc(mod.title)} 文件关系</h3>` +
+    `<p class="lead">${studyEsc(mod.relation)}</p>` +
+    `<div class="study-detail-grid">` +
+      `<div>${renderStudyRelation(mod, activeFile.id)}</div>` +
+      `<div id="studyFunctionPanel">${renderStudyFunction(activeFile)}</div>` +
+    `</div>`;
+  panel.querySelectorAll("[data-study-file]").forEach(btn => {
+    btn.addEventListener("click", () => renderStudyDetail(mod.id, btn.dataset.studyFile));
+  });
+}
+
+renderStudyDetail("flow");
+
+const initial = window.location.hash.replace("#", "");
+if (initial && document.getElementById(initial)) {
+  activate(initial);
+}
+</script>
+</body>
+</html>

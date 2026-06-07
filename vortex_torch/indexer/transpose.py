@@ -6,18 +6,18 @@ from ..utils import Schedule
 
 class Transpose(vOp):
     r"""
-    Swap the two inner axes of each slice along the leading axis.
+    对前导轴上每个 slice，交换内部两个轴。
 
     :Math:
         .. math::
 
             Y_{s,d_1,d_0} = X_{s,d_0,d_1},
 
-        applied independently per leading index :math:`s`.
-    :__init__: ``Transpose()`` — no arguments.
-    :__call__: ``y = op(x, ctx=ctx)`` — ``x`` ``[S, D_0, D_1]`` →
-        ``[S, D_1, D_0]``. ``BATCHED`` iff the input is ``BATCHED``, else
-        ``RAGGED``.
+        对每个前导索引 :math:`s` 独立执行。
+    :__init__: ``Transpose()``；不需要参数。
+    :__call__: ``y = op(x, ctx=ctx)``；``x`` ``[S, D_0, D_1]`` ->
+        ``[S, D_1, D_0]``。输入是 ``BATCHED`` 时输出才是 ``BATCHED``，
+        否则输出是 ``RAGGED``。
     """
 
     def __init__(self):
@@ -26,37 +26,36 @@ class Transpose(vOp):
         self.output_buffer: Optional[torch.Tensor] = None
         self.schedule = Schedule.W
 
-    # ---------------- profile ----------------
+    # ---------------- profile 阶段 ----------------
     def profile(self, x: vTensor, ctx: Context) -> vTensor:
-        r"""Trace-time: validate ``x`` ``[S, D_0, D_1]``, resolve the output
-        format, and return a ``vTensor`` view of the ``[S, D_1, D_0]``
-        transpose."""
+        r"""trace 阶段：校验 ``x`` ``[S, D_0, D_1]``，确定输出格式，并返回
+        ``[S, D_1, D_0]`` 转置结果的 ``vTensor`` 视图。"""
         prefix = self._prefix()
 
-        # Type & rank checks
+        # 类型和维度数量检查
         assert isinstance(x, vTensor), f"{prefix}profile expects x to be vTensor, got {type(x)}"
         assert x.dim() == 3, (
             f"{prefix}expected 3D input [S, D0, D1], "
             f"got ndim={x.dim()} shape={tuple(x.shape)}"
         )
 
-        # Output is BATCHED iff the input is BATCHED; otherwise RAGGED.
+        # 输入是 BATCHED 时输出才保持 BATCHED；否则输出是 RAGGED。
         self.output_format = (
             FORMAT.BATCHED if x._format == FORMAT.BATCHED else FORMAT.RAGGED
         )
 
-        # Allocate output buffer: [S, D1, D0]
-        # S is derived from runtime context (number of pages/tokens in the pipeline)
+        # 创建输出 buffer 的元数据：[S, D1, D0]。
+        # S 来自运行时上下文，表示 pipeline 中的 page/token 数量。
         S = ctx.max_num_pages
         D0, D1 = x.shape[1], x.shape[2]
-        # Pure-metadata vTensor — no real allocation. The compiled code
-        # supplies storage; we only need shape/dtype/device for codegen.
+        # 纯元数据 vTensor，不做真实内存分配。编译后的代码会提供存储；
+        # 这里仅需要 shape/dtype/device 供 codegen 使用。
         self.output_buffer = vTensor(
             shape=(S, D1, D0),
             dtype=ctx.vortex_dtype,
             device=x.device,
             _format=self.output_format,
-            tensor_id=-1,  # set by caller / graph registration if needed
+            tensor_id=-1,  # 如有需要，由调用方或图登记逻辑设置
         )
 
         for t in [x]:

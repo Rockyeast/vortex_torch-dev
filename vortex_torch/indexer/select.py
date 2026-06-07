@@ -1,11 +1,10 @@
-"""Selection-style indexer ops.
+"""选择类 indexer 算子。
 
-Ops in this file *produce intermediate* block-table / seqlens tensors —
-they don't write into the framework-provided ``o`` (which the existing
-:class:`vortex_torch.indexer.topK` / "TopKOut" does). Use a follow-up op
-(forthcoming) to copy the intermediates produced here into the final
-``o`` / ``ctx.metadata.sparse_seqlens`` buffers consumed by
-``trtllm_batch_decode_with_kv_cache``.
+本文件里的算子会 *产生中间* block-table / seqlens tensor。它们不会写入框架
+传进来的 ``o``，后者是现有 :class:`vortex_torch.indexer.topK` / "TopKOut"
+负责的路径。这里产生的中间结果需要后续算子（待补）拷贝到最终的
+``o`` / ``ctx.metadata.sparse_seqlens`` buffer，供
+``trtllm_batch_decode_with_kv_cache`` 消费。
 """
 from __future__ import annotations
 
@@ -20,12 +19,12 @@ from .context import Context
 
 class TopK(vOp):
     r"""
-    Explicit-``k`` block-table top-k (trtllm backend, two outputs).
+    显式 ``k`` 的 block-table top-k（trtllm backend，两个输出）。
 
     :Math:
-        For request row :math:`i` with score :math:`s` over its dense blocks,
-        ``bos`` / ``eos`` reserved blocks and
-        :math:`L_i = \lceil \text{seqlen}_i / \text{block\_size}\rceil`:
+        对请求行 :math:`i`，给定 dense blocks 上的 score :math:`s`、
+        ``bos`` / ``eos`` 预留 block 数，以及
+        :math:`L_i = \lceil \text{seqlen}_i / \text{block\_size}\rceil`：
 
         .. math::
 
@@ -35,17 +34,17 @@ class TopK(vOp):
                 \;\cup\; [L_i-\text{eos}, L_i), & \text{otherwise}.
             \end{cases}
 
-        Rows that already fit the budget are copied dense; larger rows keep
-        the leading ``bos`` and trailing ``eos`` blocks and fill the middle
-        with the top-``k`` by score.
-    :__init__: ``TopK(k)`` — number of *selected* blocks (excludes the
-        reserved BOS/EOS); per-row sparse block count is ``bos + k + eos``.
-    :__call__: ``block_tables, seqlens = op(score, ctx=ctx)`` — ``score`` RAGGED
-        ``[S, 1, 1]`` → ``block_tables`` (RAGGED int32) and ``seqlens``
-        (BATCHED int32), both auto-allocated. Feed the pair to
-        :class:`Union` before ``trtllm_batch_decode_with_kv_cache``.
-    :Note: **trtllm only** — asserts under flashinfer; use :func:`topK` for
-        flashinfer / CSR layouts.
+        如果某一行本来就能放进预算，就直接复制 dense blocks；如果行太长，则保留
+        开头 ``bos`` 和结尾 ``eos`` blocks，中间按 score 选 top-``k``。
+    :__init__: ``TopK(k)``；要 *选择* 的 block 数，不包含预留的 BOS/EOS。
+        每行 sparse block 数是 ``bos + k + eos``。
+    :__call__: ``block_tables, seqlens = op(score, ctx=ctx)``；``score`` 是
+        RAGGED ``[S, 1, 1]``，输出 ``block_tables``（RAGGED int32）和
+        ``seqlens``（BATCHED int32），两者都会自动创建。送进
+        ``trtllm_batch_decode_with_kv_cache`` 前，需要把这对结果交给
+        :class:`Union`。
+    :Note: **仅支持 trtllm**。flashinfer 下会 assert；flashinfer / CSR 布局请使用
+        :func:`topK`。
     """
 
     _supported_formats: FrozenSet[FORMAT] = frozenset({FORMAT.RAGGED})
@@ -60,13 +59,13 @@ class TopK(vOp):
             raise ValueError(f"TopK: k must be >= 1, got {k_int}")
         self.k = k_int
         self.schedule = Schedule.S
-        self.block_tables_buffer: vTensor = None  # filled in profile()
+        self.block_tables_buffer: vTensor = None  # 在 profile() 里填充
         self.seqlens_buffer: vTensor = None
 
     def profile(self, x: vTensor, ctx: Context):
         prefix = self._prefix()
 
-        # ---- input validation (mirrors topK) ----
+        # ---- 输入校验（基本对齐 topK）----
         assert isinstance(x, vTensor), (
             f"{prefix}profile expects x to be vTensor, got {type(x)}"
         )
@@ -81,7 +80,7 @@ class TopK(vOp):
             f"Supported: {sorted(self._supported_formats, key=lambda f: f.value)}"
         )
 
-        # ---- trtllm-only ----
+        # ---- 仅支持 trtllm ----
         backend = (
             getattr(ctx, "vortex_attention_backend", None) or "flashinfer"
         ).lower()
@@ -91,11 +90,11 @@ class TopK(vOp):
             f"regular ``topK()`` op for flashinfer / CSR layouts."
         )
 
-        # ---- allocate the two intermediate outputs ----
-        # block_tables: RAGGED int32. memory_init picks ``leading =
-        # ctx.max_num_blocks`` (= eff_bs * max_blocks_per_seq) for RAGGED
-        # intermediates, which is exactly the byte count the CUDA kernel
-        # addresses as ``[eff_bs, max_blocks_per_seq]`` contiguous memory.
+        # ---- 创建两个中间输出 ----
+        # block_tables：RAGGED int32。memory_init 会给 RAGGED 中间量选择
+        # ``leading = ctx.max_num_blocks``，也就是
+        # ``eff_bs * max_blocks_per_seq``。这正好等于 CUDA kernel 按
+        # ``[eff_bs, max_blocks_per_seq]`` 连续内存寻址时需要的字节规模。
         self.block_tables_buffer = vTensor(
             shape=(0, 1, 1),
             dtype=torch.int32,
@@ -106,8 +105,8 @@ class TopK(vOp):
         ctx.tensor_list.append(self.block_tables_buffer)
         ctx.output_tensor_to_op_list.append(len(ctx.op_list))
 
-        # seqlens: BATCHED int32. memory_init picks ``leading = ctx.max_bs *
-        # ctx.num_kv_heads`` for BATCHED intermediates.
+        # seqlens：BATCHED int32。memory_init 会给 BATCHED 中间量选择
+        # ``leading = ctx.max_bs * ctx.num_kv_heads``。
         self.seqlens_buffer = vTensor(
             shape=(0, 1, 1),
             dtype=torch.int32,
@@ -118,8 +117,7 @@ class TopK(vOp):
         ctx.tensor_list.append(self.seqlens_buffer)
         ctx.output_tensor_to_op_list.append(len(ctx.op_list))
 
-        # Two-output op — multi-output is supported by Graph since the
-        # migration in ``compiler/graph.py``.
+        # 双输出算子。``compiler/graph.py`` 迁移后，Graph 已经支持 multi-output。
         ctx.op_list.append(self)
         ctx.op_to_input_tensor_list.append([x.tensor_id])
         ctx.op_to_output_tensor_list.append([

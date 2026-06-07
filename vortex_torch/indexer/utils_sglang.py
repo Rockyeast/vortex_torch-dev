@@ -1,4 +1,4 @@
-import torch
+    import torch
 from typing import Tuple
 from .context import Context
 from .planner_sglang import get_sglang_plan_decode_v2_module
@@ -6,6 +6,11 @@ from .prefill_sglang import get_sglang_prefill_module
 
 
 def get_decode_planner(policy: str = None):
+    """构造 flashinfer/CSR decode planner 闭包。
+
+    外层函数先加载/编译 SGLang decode planner 模块，并把模块引用绑定到内部
+    ``plan_decode`` 闭包里。后续每次 decode forward 只调用闭包，不需要重复查找模块。
+    """
 
     module = get_sglang_plan_decode_v2_module(
         policy_body=policy,
@@ -18,6 +23,12 @@ def get_decode_planner(policy: str = None):
         req_indices: torch.Tensor,
         ctx: Context
     ):
+        """把当前 decode batch 的 page/block 信息写入 ``ctx.metadata``。
+
+        flashinfer 路径使用 CSR 风格的 ``dense/sparse_kv_indptr`` 和
+        ``dense/sparse_kv_indices``；同时写入 workload scheduler 的
+        ``winfo_*`` 输出。
+        """
         md = ctx.metadata
         module.sglang_plan_decode_v2(
             cached_seq_lens,
@@ -50,24 +61,24 @@ def get_decode_planner(policy: str = None):
 
 
 def get_decode_planner_trtllm(policy: str = None):
-    """Decode planner variant that emits trtllm-ready outputs directly.
+    """构造直接输出 trtllm-ready metadata 的 decode planner。
 
-    The trtllm planner is **indptr-free**: it never reads or writes
+    trtllm planner 是 **indptr-free** 的：它不会读写
     ``dense_kv_indptr`` / ``sparse_kv_indptr`` / ``dense_kv_indices`` /
-    ``sparse_kv_indices``. Outputs filled by the underlying CUDA kernel:
+    ``sparse_kv_indices``。底层 CUDA kernel 会填充：
 
-      * ``ctx.dense_block_tables``  — every selected page for the dense path
-      * ``ctx.sparse_block_tables`` — only the BOS+EOS slots; the middle is
-        filled by the topk kernel later
-      * ``ctx.dense_seqlens`` / ``ctx.sparse_seqlens`` — int32 token counts
-        consumed by ``trtllm_batch_decode_with_kv_cache``, the trtllm topk
-        kernels, and the Schedule.S Triton kernels (which derive per-row
-        block counts via ``ceil(tokens / block_size)``)
-      * ``ctx.kv_last_page_len`` — same semantics as before
-      * ``ctx.winfo_*`` — workload-scheduler outputs; ``winfo_kv_offsets[j]``
-        carries ``row * max_blocks_per_seq + col`` so the Schedule.W kernel
-        preamble (with ``indices = dense_block_tables.view(-1)``) resolves
-        page ids correctly.
+      * ``ctx.metadata.dense_block_tables``：dense 路径的全部已选 page；
+      * ``ctx.metadata.sparse_block_tables``：只填 BOS+EOS 槽位，中间部分稍后
+        由 topk kernel 填；
+      * ``ctx.metadata.dense_seqlens`` / ``ctx.metadata.sparse_seqlens``：
+        int32 token 数，会被 ``trtllm_batch_decode_with_kv_cache``、trtllm topk
+        kernel 和 Schedule.S Triton kernel 使用；Schedule.S kernel 会通过
+        ``ceil(tokens / block_size)`` 推导每行 block 数；
+      * ``ctx.metadata.kv_last_page_len``：语义和 flashinfer 路径相同；
+      * ``ctx.metadata.winfo_*``：workload scheduler 输出；
+        ``winfo_kv_offsets[j]`` 携带 ``row * max_blocks_per_seq + col``，
+        这样 Schedule.W kernel preamble 在使用
+        ``indices = dense_block_tables.view(-1)`` 时能正确解析 page id。
     """
     module = get_sglang_plan_decode_v2_module(
         policy_body=policy,
@@ -81,6 +92,7 @@ def get_decode_planner_trtllm(policy: str = None):
         req_indices: torch.Tensor,
         ctx: Context,
     ):
+        """把当前 decode batch 的 trtllm block-table metadata 写入 ``ctx.metadata``。"""
         md = ctx.metadata
         module.sglang_plan_decode_v2_trtllm(
             cached_seq_lens,
@@ -112,11 +124,10 @@ def get_decode_planner_trtllm(policy: str = None):
 
 
 def get_prefill_planner():
-    """Mirror of :func:`get_decode_planner` for the prefill path.
+    """prefill 路径对应的 planner 工厂，结构类似 :func:`get_decode_planner`。
 
-    Triggers a one-time JIT compile of the prefill module on first call,
-    then returns a closure that calls ``sglang_plan_prefill`` with the
-    module reference baked in (no per-call lookup).
+    第一次调用时触发 prefill 模块的一次性 JIT compile，然后返回一个闭包。
+    这个闭包会直接调用 ``sglang_plan_prefill``，模块引用已经绑定好，不需要每次查找。
     """
     module = get_sglang_prefill_module()
 
@@ -134,6 +145,7 @@ def get_prefill_planner():
         page_size: int,
         num_kv_heads: int,
     ):
+        """调用 SGLang prefill planner，填充 prefill 路径需要的 indptr/indices。"""
         module.sglang_plan_prefill(
             cached_seq_lens,
             dense_kv_indptr,
@@ -153,9 +165,11 @@ def get_prefill_planner():
 
 
 def get_chunkwise_nh2hn_transpose():
-    """Factory for the ``Chunkwise_NH2HN_Transpose`` kernel; mirrors
-    :func:`get_decode_planner`'s closure pattern so the module reference
-    is bound once at backend init."""
+    """``Chunkwise_NH2HN_Transpose`` kernel 的工厂函数。
+
+    它也采用 :func:`get_decode_planner` 的闭包模式，让模块引用在 backend
+    初始化时只绑定一次。
+    """
     module = get_sglang_prefill_module()
 
     def chunkwise_nh2hn_transpose(
@@ -174,8 +188,10 @@ def get_chunkwise_nh2hn_transpose():
 
 
 def get_chunkwise_hn2nh_transpose():
-    """Factory for the ``Chunkwise_HN2NH_Transpose`` kernel; mirrors
-    :func:`get_decode_planner`'s closure pattern."""
+    """``Chunkwise_HN2NH_Transpose`` kernel 的工厂函数。
+
+    它也采用 :func:`get_decode_planner` 的闭包模式。
+    """
     module = get_sglang_prefill_module()
 
     def chunkwise_hn2nh_transpose(
@@ -192,4 +208,3 @@ def get_chunkwise_hn2nh_transpose():
         )
 
     return chunkwise_hn2nh_transpose
-

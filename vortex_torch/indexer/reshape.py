@@ -7,7 +7,7 @@ from ..utils import Schedule
 
 class Reshape(vOp):
     r"""
-    Same-numel reshape of the inner two axes (indexer side).
+    indexer 侧的 same-numel reshape：只重排内部两个轴。
 
     :Math:
         .. math::
@@ -15,16 +15,15 @@ class Reshape(vOp):
             X\in\mathbb{R}^{S\times x_1\times y_1} \;\longrightarrow\;
             Y\in\mathbb{R}^{S\times x_2\times y_2},\qquad x_2\,y_2 = x_1\,y_1,
 
-        reading the flat :math:`x_1 y_1` elements row-major into the new
-        :math:`(x_2, y_2)` layout, independently per leading index :math:`s`
-        (a Triton-tile :func:`tl.reshape`; no data movement beyond the
-        existing load/store).
-    :__init__: ``Reshape(-1, x2, y2)`` — the leading dim must be ``-1`` (the
-        ``S`` axis is preserved); ``x2*y2`` must equal the input's ``x1*y1``
-        (checked at trace time).
-    :__call__: ``y = op(x, ctx=ctx)`` — ``x`` ``[S, x_1, y_1]`` →
-        ``[S, x_2, y_2]``. ``BATCHED`` iff the input is ``BATCHED``, else
-        ``RAGGED``.
+        对每个前导索引 :math:`s` 独立处理：先把 :math:`x_1 y_1` 个内部元素
+        按 row-major 顺序拉平，再重新解释成 :math:`(x_2, y_2)` 布局。
+        这对应 Triton tile 内的 :func:`tl.reshape`，除了既有 load/store 外不做
+        额外数据搬运。
+    :__init__: ``Reshape(-1, x2, y2)``；前导维必须是 ``-1``，表示保留
+        ``S`` 轴；``x2*y2`` 必须等于输入的 ``x1*y1``，会在 trace 阶段检查。
+    :__call__: ``y = op(x, ctx=ctx)``；``x`` ``[S, x_1, y_1]`` ->
+        ``[S, x_2, y_2]``。输入是 ``BATCHED`` 时输出才是 ``BATCHED``，
+        否则输出是 ``RAGGED``。
     """
 
     def __init__(self, batch_dim: int, x2: int, y2: int):
@@ -45,14 +44,14 @@ class Reshape(vOp):
 
         self.output_format: Optional[FORMAT] = None
         self.output_buffer: Optional[vTensor] = None
-        # Fused into the per-workload kernel.
+        # 融合进 per-workload kernel。
         self.schedule = Schedule.W
 
-    # ---------------- profile ----------------
+    # ---------------- profile 阶段 ----------------
     def profile(self, x: vTensor, ctx: Context) -> vTensor:
-        r"""Trace-time: validate ``x`` ``[S, x1, y1]`` and the same-numel
-        constraint (``x1*y1 == x2*y2``), resolve the output format, register
-        the op, and return a ``vTensor`` view of the ``[S, x2, y2]`` output."""
+        r"""trace 阶段：校验 ``x`` ``[S, x1, y1]``，并检查 same-numel 约束
+        ``x1*y1 == x2*y2``。随后确定输出格式、注册算子，并返回
+        ``[S, x2, y2]`` 输出的 ``vTensor`` 视图。"""
         prefix = self._prefix()
 
         assert isinstance(x, vTensor), (
@@ -72,13 +71,12 @@ class Reshape(vOp):
             f"target x2*y2 = {self.x2}*{self.y2} = {out_numel}"
         )
 
-        # Output is BATCHED iff the input is BATCHED; otherwise RAGGED.
+        # 输入是 BATCHED 时输出才保持 BATCHED；否则输出是 RAGGED。
         self.output_format = (
             FORMAT.BATCHED if x._format == FORMAT.BATCHED else FORMAT.RAGGED
         )
 
-        # Pure-metadata vTensor — leading dim is a placeholder; the
-        # runtime knows the actual ``S`` from the pipeline.
+        # 纯元数据 vTensor。前导维 0 只是占位符；实际 ``S`` 由运行时 pipeline 知道。
         self.output_buffer = vTensor(
             shape=(0, self.x2, self.y2),
             dtype=ctx.vortex_dtype,
@@ -87,7 +85,7 @@ class Reshape(vOp):
             tensor_id=len(ctx.tensor_list),
         )
 
-        # Register in the indexer graph.
+        # 在 indexer graph 里登记当前算子和输入/输出关系。
         ctx.tensor_list.append(self.output_buffer)
         ctx.output_tensor_to_op_list.append(len(ctx.op_list))
         ctx.op_list.append(self)

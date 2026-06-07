@@ -6,7 +6,7 @@ from ...abs import vTensor, vOp
 from ...utils import Schedule
 
 # =====================================================================
-# Data structures
+# 数据结构
 # =====================================================================
 
 class UnionFind:
@@ -32,13 +32,12 @@ class UnionFind:
 
 class OpDAG:
     """
-    A lightweight DAG over ops (nodes) with directed edges derived from
-    tensor producer/consumer relationships.
+    轻量级 op DAG。节点是 op，边来自 tensor 的 producer/consumer 关系。
     """
     def __init__(self):
-        self.nodes: List[int] = []                                       # op ids in topo order
-        self.successors: DefaultDict[int, Set[int]] = defaultdict(set)   # op -> consumer ops
-        self.predecessors: DefaultDict[int, Set[int]] = defaultdict(set) # op -> producer ops
+        self.nodes: List[int] = []                                       # topo 顺序中的 op id
+        self.successors: DefaultDict[int, Set[int]] = defaultdict(set)   # op -> 消费它的 op
+        self.predecessors: DefaultDict[int, Set[int]] = defaultdict(set) # op -> 生产它输入的 op
 
     def add_node(self, op_id: int):
         self.nodes.append(op_id)
@@ -51,15 +50,15 @@ class OpDAG:
 
 class SubgraphDAG:
     """
-    A view over the op-level DAG at the subgraph granularity.
-    Used during fusion to check whether a merge would create a cycle.
+    以 subgraph 粒度观察 op-level DAG。
+    fusion 阶段用它检查一次 merge 是否会制造环。
     """
     def __init__(self, op_dag: OpDAG, uf: UnionFind):
         self._op_dag = op_dag
         self._uf = uf
 
     def _build_sg_successors(self) -> DefaultDict[int, Set[int]]:
-        """Rebuild subgraph-level successor map from current UF state."""
+        """根据当前 UnionFind 状态重建 subgraph-level successor 映射。"""
         succ: DefaultDict[int, Set[int]] = defaultdict(set)
         for op_id in self._op_dag.nodes:
             sg = self._uf.find(op_id)
@@ -70,18 +69,17 @@ class SubgraphDAG:
         return succ
 
     def can_merge(self, sg_a: int, sg_b: int) -> bool:
-        """One-directional cycle check for merging ``sg_a`` and ``sg_b``.
+        """对 merge ``sg_a`` 和 ``sg_b`` 做单方向环检查。
 
-        Specifically: is there a path from ``sg_b`` to ``sg_a`` that does
-        not use the direct ``sg_a -> sg_b`` edge? Such a back-path means
-        that merging would create a cycle on the ``sg_a``-side.
+        具体检查：是否存在一条从 ``sg_b`` 到 ``sg_a`` 的路径，并且这条路径不使用
+        直接的 ``sg_a -> sg_b`` 边？如果存在这种反向路径，merge 后会在
+        ``sg_a`` 一侧形成环。
 
-        For a **bidirectional** safety check (required when fusing W ops
-        that have no direct edge between them — e.g., sibling ops sharing
-        an input), call :meth:`can_merge_bidir` instead.
+        如果需要 **双向** 安全检查（例如融合两个没有直接边、但共享输入的 W op，
+        也就是 sibling ops），请改用 :meth:`can_merge_bidir`。
         """
         succ = self._build_sg_successors()
-        # Remove the direct edge for the check
+        # 检查时移除直接边
         succ[sg_a].discard(sg_b)
 
         visited: Set[int] = {sg_b}
@@ -90,32 +88,29 @@ class SubgraphDAG:
             node = queue.popleft()
             for nxt in succ[node]:
                 if nxt == sg_a:
-                    return False  # back-path exists -> would create cycle
+                    return False  # 存在反向路径 -> 会形成环
                 if nxt not in visited:
                     visited.add(nxt)
                     queue.append(nxt)
-        return True  # safe
+        return True  # 安全
 
     def can_merge_bidir(self, sg_a: int, sg_b: int) -> bool:
-        """Can ``sg_a`` and ``sg_b`` be fused with no direction assumed?
+        """在不假设方向的情况下，``sg_a`` 和 ``sg_b`` 是否可以融合？
 
-        A merge creates a cycle iff there is a **non-trivial** path
-        between them in *either* direction — a path of length >= 2 that
-        passes through at least one other subgraph. Direct edges
-        (``a -> b`` or ``b -> a``) alone are always fine: after fusing
-        they become within-subgraph dependencies handled by the op
-        topological order.
+        当且仅当二者之间任意方向存在 **非平凡** 路径时，merge 会形成环。
+        非平凡路径指长度 >= 2，并且经过至少一个其他 subgraph 的路径。单独的直接边
+        （``a -> b`` 或 ``b -> a``）是安全的：融合后它会变成 subgraph 内部依赖，
+        由 op 的拓扑顺序处理。
 
-        Note: this is NOT the same as ``can_merge(a, b) and can_merge(b, a)``.
-        :meth:`can_merge` only strips the ``sg_a -> sg_b`` edge, which
-        means one of the two calls still "sees" the direct edge and
-        refuses adjacent W-pairs.
+        注意：这不等价于 ``can_merge(a, b) and can_merge(b, a)``。
+        :meth:`can_merge` 只会移除 ``sg_a -> sg_b`` 边，这意味着两个调用中的
+        一个仍然会“看到”直接边，从而拒绝相邻的 W-pair。
         """
         succ = self._build_sg_successors()
 
         def _reaches_via_other(src: int, dst: int) -> bool:
-            # Step through successors of ``src`` that are NOT ``dst``
-            # (filtering out any direct ``src -> dst`` edge), then BFS.
+            # 先走到 ``src`` 的非 ``dst`` successor（过滤掉直接 ``src -> dst`` 边），
+            # 然后 BFS。
             visited: Set[int] = {src}
             queue: deque = deque()
             for nxt in succ[src]:
@@ -154,10 +149,9 @@ class Graph:
         self.op_list: List[vOp] = op_list
         self.output_tensor_to_op_list: List[Optional[int]] = output_tensor_to_op_list
         self.op_to_input_tensor_list: List[List[int]] = op_to_input_tensor_list
-        # List of output tensor ids per op. Single-output ops carry a
-        # one-element list; multi-output ops (e.g. ``TopK`` returning
-        # ``(block_table, seqlens)``) carry one entry per output. Codegens
-        # that only need the first output should index with ``[op_id][0]``.
+        # 每个 op 对应一组输出 tensor id。单输出 op 只有一个元素；多输出 op
+        # （例如 ``TopK`` 返回 ``(block_table, seqlens)``）会为每个输出记录一项。
+        # 如果某个 codegen 只需要第一个输出，应使用 ``[op_id][0]``。
         self.op_to_output_tensor_list: List[List[int]] = op_to_output_tensor_list
         self.input_tensor_ids: List[int] = input_tensor_ids
         self.output_tensor_ids: List[int] = output_tensor_ids
@@ -201,34 +195,53 @@ def _build_local_graph(
     global_output_tensor_ids: List[int],
 ) -> Graph:
     """
-    Build a self-contained local Graph from a subset of global op ids.
-    All structural ids inside the returned Graph are remapped to local ids.
+    根据一组全局 op id 构造一个自包含的局部 Graph。
+
+    返回的 Graph 内部所有结构 id 都会重新映射成本地图里的 id。
     """
+    # 第 1 步：统一输出表示。
+    # 有的 op 是单输出，有的 op 是多输出；这里全部转成 List[int]，
+    # 后面就可以统一按“输出 tensor 列表”处理。
     global_op_to_output_tensor_ids: List[List[int]] = [
         _as_tensor_id_list(x) for x in global_op_to_output_tensor_list
     ]
 
+    # 第 2 步：记录当前要切出来的 op，并准备收集这些 op 涉及的所有 tensor。
     selected_global_op_set: Set[int] = set(selected_global_op_ids)
     selected_global_tensor_ids: Set[int] = set()
 
+    # 第 3 步：收集局部图需要的 tensor。
+    # 一个局部 graph 里只要某个 op 用到了某个输入/输出 tensor，
+    # 这个 tensor 就必须出现在 local_tensor_list 里。
     for global_op_id in selected_global_op_ids:
         for tid in global_op_to_input_tensor_list[global_op_id]:
             selected_global_tensor_ids.add(tid)
         for tid in global_op_to_output_tensor_ids[global_op_id]:
             selected_global_tensor_ids.add(tid)
 
+    # 第 4 步：排序，让 global tensor id -> local tensor id 的映射稳定。
     sorted_global_tensor_ids: List[int] = sorted(selected_global_tensor_ids)
 
+    # 第 5 步：建立全局 id 到局部 id 的映射。
+    # 例如 selected_global_op_ids = [2, 4, 5] 时：
+    #   global op2 -> local op0
+    #   global op4 -> local op1
+    #   global op5 -> local op2
     global_op_id_to_local: Dict[int, int] = {
         gid: lid for lid, gid in enumerate(selected_global_op_ids)
     }
+    # tensor 也一样重编号；局部图内部只使用连续的 local tensor id。
     global_tensor_id_to_local: Dict[int, int] = {
         gid: lid for lid, gid in enumerate(sorted_global_tensor_ids)
     }
 
+    # 第 6 步：根据刚才收集到的 id，从全局列表里取出真正属于局部图的对象。
     local_tensor_list = [global_tensor_list[gid] for gid in sorted_global_tensor_ids]
     local_op_list = [global_op_list[gid] for gid in selected_global_op_ids]
 
+    # 第 7 步：构造局部版 tensor -> producer op 反查表。
+    # 如果某个 tensor 的 producer 不在当前 selected op 里，
+    # 那它对这个局部图来说就是外部输入，producer 记为 None。
     local_output_tensor_to_op_list: List[Optional[int]] = []
     for gtid in sorted_global_tensor_ids:
         producer = global_output_tensor_to_op_list[gtid]
@@ -237,14 +250,17 @@ def _build_local_graph(
         else:
             local_output_tensor_to_op_list.append(global_op_id_to_local[producer])
 
+    # 第 8 步：构造局部版 op -> input tensor 表。
+    # 每个输入 tensor id 都从 global id 改成 local id。
     local_op_to_input_tensor_list: List[List[int]] = [
         [global_tensor_id_to_local[tid] for tid in global_op_to_input_tensor_list[gid]]
         for gid in selected_global_op_ids
     ]
 
-    # Multi-output ops are supported: each entry is the list of output
-    # tensor_ids (1+) for that op. Codegens that only consume the first
-    # output index with ``[op_id][0]``.
+    # 第 9 步：构造局部版 op -> output tensor 表。
+    # 每个输出 tensor id 同样从 global id 改成 local id。
+    # 支持多输出 op：每个条目都是该 op 的输出 tensor_id 列表（至少 1 个）。
+    # 只消费第一个输出的 codegen 可以用 ``[op_id][0]``。
     local_op_to_output_tensor_list: List[List[int]] = []
     for gid in selected_global_op_ids:
         outs = global_op_to_output_tensor_ids[gid]
@@ -256,6 +272,10 @@ def _build_local_graph(
             [global_tensor_id_to_local[t] for t in outs]
         )
 
+    # 第 10 步：把局部 tensor/op 表和输入输出边界打包成 Graph。
+    # input_tensor_ids / output_tensor_ids 使用 local id；
+    # global_input_tensor_ids / global_output_tensor_ids 保留全局 id，
+    # 方便外层知道这个 subgraph 对应原始 ctx 里的哪些 tensor。
     return Graph(
         tensor_list=local_tensor_list,
         op_list=local_op_list,
@@ -270,7 +290,7 @@ def _build_local_graph(
 
 
 # =====================================================================
-# Phase 1: Convert tensor-based context into an op-level DAG
+# 阶段 1：把基于 tensor 的 context 记录转换成 op 级别 DAG
 # =====================================================================
 
 def _build_op_dag(
@@ -282,18 +302,16 @@ def _build_op_dag(
     side_effect_op_ids: List[int] = (),
 ) -> Tuple[OpDAG, Set[int]]:
     """
-    Build an OpDAG containing only the ops reachable from any of the
-    final output tensors. Nodes are stored in topological order
-    (dependencies before dependents).
+    构造只包含“能从最终输出 tensor 反向追溯到”的 op 的 OpDAG。
+    节点按拓扑顺序保存，也就是依赖先于使用者。
 
-    A pipeline has three kinds of roots:
-      * the attention output ``tensor_id == 1``,
-      * tensors that are produced but have no in-graph consumer
-        (orphan sinks),
-      * side-effect ops such as ``Save`` that intentionally do not
-        claim their target tensor as a producer — passed via
-        ``side_effect_op_ids``.
-    All three seed the reverse DFS so their dependencies survive.
+    一个 pipeline 有三类反向搜索起点：
+      * attention 输出 ``tensor_id == 1``；
+      * 有生产者、但图内没有消费者的 tensor，也就是孤立 sink；
+      * 带副作用的 op，例如 ``Save``。这类 op 会故意不把目标 tensor
+        标成自己的输出生产者，因此需要通过 ``side_effect_op_ids`` 额外传入。
+
+    这三类都会作为反向 DFS 的起点，保证它们依赖的 op 不会被误删。
     """
     visited: Set[int] = set()
     topo_order: List[int] = []
@@ -311,9 +329,9 @@ def _build_op_dag(
     for tid in final_output_tensor_ids:
         producer = output_tensor_to_op_list[tid]
         if producer is None:
-            # Fine: a cache-field target of a ``Save`` op has no producer
-            # in ``output_tensor_to_op_list`` by design; the Save op is
-            # seeded separately via ``side_effect_op_ids``.
+            # 这是正常情况：``Save`` op 的 cache-field 目标在设计上不会登记到
+            # ``output_tensor_to_op_list`` 里；Save op 会通过
+            # ``side_effect_op_ids`` 单独作为反向 DFS 起点。
             continue
         dfs(producer)
 
@@ -336,21 +354,18 @@ def _build_op_dag(
 
 
 # =====================================================================
-# Phase 2: Fuse W-connected ops on the op DAG (cycle-safe)
+# 阶段 2：在 op DAG 上融合 W 调度的 op，且保证不引入环
 # =====================================================================
 
 def _fuse_w_ops(op_dag: OpDAG, op_list: List[vOp]) -> UnionFind:
     """
-    Fuse any pair of W-scheduled ops whose merge does not introduce a
-    cycle in the subgraph DAG.
+    融合任意一对 W-scheduled op，前提是融合后不会让 subgraph DAG 出现环。
 
-    Unlike an edge-only fuser, we do **not** require a direct W→W
-    producer/consumer edge between the two ops. Siblings that share an
-    input (e.g. two reductions over the same KV field) can be fused into
-    a single kernel as long as they don't also sit on opposite ends of a
-    path through another subgraph.
+    这里不是只融合有直接 W→W 生产/消费边的 op。两个共享输入的 sibling op
+    （例如对同一个 KV 字段做两个 reduction）也可以被融合到同一个 kernel，
+    只要它们没有同时位于另一条跨 subgraph 路径的两端。
 
-    Returns the UnionFind representing the final subgraph assignments.
+    返回值是 UnionFind，表示最终每个 op 属于哪个融合后的 subgraph。
     """
     uf = UnionFind()
     for op_id in op_dag.nodes:
@@ -359,7 +374,7 @@ def _fuse_w_ops(op_dag: OpDAG, op_list: List[vOp]) -> UnionFind:
     sg_dag = SubgraphDAG(op_dag, uf)
 
     def _w_subgraph_reps() -> List[int]:
-        """Current unique W-subgraph representatives, in op-topo order."""
+        """当前唯一的 W-subgraph 代表元，按 op 拓扑顺序排列。"""
         seen_set: Set[int] = set()
         reps: List[int] = []
         for op_id in op_dag.nodes:
@@ -375,8 +390,8 @@ def _fuse_w_ops(op_dag: OpDAG, op_list: List[vOp]) -> UnionFind:
     while changed:
         changed = False
         reps = _w_subgraph_reps()
-        # O(N^2) pair scan per iteration; N shrinks by one on each
-        # successful merge, so the loop terminates in <= N outer passes.
+        # 每轮做 O(N^2) 的配对扫描；每次成功融合后 N 至少减少 1，
+        # 所以外层循环最多跑 N 轮。
         for i in range(len(reps)):
             sg_a = uf.find(reps[i])
             for j in range(i + 1, len(reps)):
@@ -386,7 +401,7 @@ def _fuse_w_ops(op_dag: OpDAG, op_list: List[vOp]) -> UnionFind:
                 if sg_dag.can_merge_bidir(sg_a, sg_b):
                     uf.union(sg_a, sg_b)
                     changed = True
-                    # ``reps`` is now stale — restart the outer sweep.
+                    # ``reps`` 已经过期，重新开始外层扫描。
                     break
             if changed:
                 break
@@ -395,7 +410,7 @@ def _fuse_w_ops(op_dag: OpDAG, op_list: List[vOp]) -> UnionFind:
 
 
 # =====================================================================
-# Phase 3: Convert fused op groups back into Graph objects
+# 阶段 3：把融合后的 op 组重新转换成 Graph 对象
 # =====================================================================
 
 def _build_all_graphs(
@@ -410,7 +425,7 @@ def _build_all_graphs(
     tensor_to_consumers: DefaultDict[int, List[int]],
     final_output_tensor_ids: List[int],
 ) -> Tuple[Graph, List[Graph]]:
-    """Convert the fused subgraph groups back into Graph objects."""
+    """把融合后的 subgraph 分组转换回 Graph 对象。"""
 
     op_to_output_tensor_ids: List[List[int]] = [
         _as_tensor_id_list(x) for x in op_to_output_tensor_list
@@ -418,7 +433,7 @@ def _build_all_graphs(
     topo_op_ids = op_dag.nodes
     final_output_set: Set[int] = set(final_output_tensor_ids)
 
-    # --- Full graph ---
+    # --- 完整图 ---
     full_input_set: Set[int] = set()
     for op_id in topo_op_ids:
         for tid in op_to_input_tensor_list[op_id]:
@@ -437,7 +452,7 @@ def _build_all_graphs(
         global_output_tensor_ids=sorted(final_output_set),
     )
 
-    # --- Collect & topo-sort subgraphs ---
+    # --- 收集 subgraph，并做 subgraph 级别拓扑排序 ---
     sg_key_to_op_ids: DefaultDict[int, List[int]] = defaultdict(list)
     sg_key_order: List[int] = []
     seen: Set[int] = set()
@@ -473,13 +488,13 @@ def _build_all_graphs(
     if len(topo_sg_ids) != len(sg_key_order):
         raise RuntimeError("Cycle detected in subgraph DAG")
 
-    # Map ops to their final topo-sorted subgraph index
+    # 把每个 op 映射到最终拓扑排序后的 subgraph id。
     op_to_subgraph_id: Dict[int, int] = {}
     for new_id, old_id in enumerate(topo_sg_ids):
         for op_id in sg_key_to_op_ids[sg_key_order[old_id]]:
             op_to_subgraph_id[op_id] = new_id
 
-    # --- Build each subgraph ---
+    # --- 构造每个 subgraph ---
     subgraphs: List[Graph] = []
     for new_id, old_id in enumerate(topo_sg_ids):
         sg_op_ids = sg_key_to_op_ids[sg_key_order[old_id]]
@@ -520,7 +535,7 @@ def _build_all_graphs(
 
 
 # =====================================================================
-# Main entry point
+# 主入口
 # =====================================================================
 
 def contruct_graph(ctx: Context) -> Tuple[Graph, List[Graph]]:
@@ -531,20 +546,21 @@ def contruct_graph(ctx: Context) -> Tuple[Graph, List[Graph]]:
     op_to_input_tensor_list: List[List[int]] = ctx.op_to_input_tensor_list
     op_to_output_tensor_list = ctx.op_to_output_tensor_list
 
-    # --- consumer lookup (used both to derive the sink set and to decide
-    # which tensors cross subgraph boundaries in Phase 3) ---
+    # --- consumer 反查表 ---
+    # 这个表有两个用途：
+    # 1. 找出哪些 tensor 是没有消费者的 sink；
+    # 2. 在阶段 3 判断哪些 tensor 会跨 subgraph 边界。
     tensor_to_consumers: DefaultDict[int, List[int]] = defaultdict(list)
     for consumer_op_id, input_tids in enumerate(op_to_input_tensor_list):
         for tid in input_tids:
             tensor_to_consumers[tid].append(consumer_op_id)
 
-    # Terminal tensors that must survive DCE. Always include the
-    # attention output ``tensor_id == 1``; additionally include every
-    # tensor that is produced but has no in-graph consumer (orphan
-    # sinks); additionally include every cache-field target of a
-    # ``Save`` (these don't appear as "orphans" because their producer
-    # slot is intentionally left ``None`` to avoid a Load → Save cycle —
-    # see ``indexer/save_load.py``).
+    # 必须在死代码消除后保留下来的终点 tensor：
+    # 1. 永远包含 attention 输出 ``tensor_id == 1``；
+    # 2. 包含所有“有生产者、但图内没有消费者”的孤立 sink；
+    # 3. 包含每个 ``Save`` 的 cache-field 目标。这些目标不会表现成普通 orphan，
+    #    因为它们的 producer 槽故意保持为 ``None``，避免产生 Load -> Save 环；
+    #    细节见 ``indexer/save_load.py``。
     side_effect_op_ids: List[int] = list(getattr(ctx, "side_effect_op_ids", []))
     save_target_tids = {
         tid
@@ -561,7 +577,7 @@ def contruct_graph(ctx: Context) -> Tuple[Graph, List[Graph]]:
     })
 
     # ---------------------------------------------------------------
-    # Phase 1: Convert to op-level DAG (ops as nodes, tensor edges)
+    # 阶段 1：转换成 op 级别 DAG，节点是 op，边来自 tensor 依赖。
     # ---------------------------------------------------------------
     op_dag, reachable_ops = _build_op_dag(
         op_list=op_list,
@@ -573,12 +589,12 @@ def contruct_graph(ctx: Context) -> Tuple[Graph, List[Graph]]:
     )
 
     # ---------------------------------------------------------------
-    # Phase 2: Fuse W-connected ops (cycle-safe merges only)
+    # 阶段 2：融合 W 调度 op，只允许不会造环的 merge。
     # ---------------------------------------------------------------
     uf = _fuse_w_ops(op_dag, op_list)
 
     # ---------------------------------------------------------------
-    # Phase 3: Convert back to Graph objects (full + subgraphs)
+    # 阶段 3：转换回 Graph 对象，包括完整图和各个 subgraph。
     # ---------------------------------------------------------------
     full_graph, subgraphs = _build_all_graphs(
         op_dag=op_dag,
