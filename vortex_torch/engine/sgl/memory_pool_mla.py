@@ -14,6 +14,7 @@ latent on each write. The vortex cache kernel addresses `cache["latent"]` by
 the token-major flat layout of `kv_buffer` for any blocks-per-page — so the
 latent field is just `kv_buffer[layer]` (no copy, no second KV cache).
 """
+# 中文读法：MLA KV cache 的 Vortex 版本。DeepSeek-V2 类 latent KV 布局和普通 K/V 不同，所以单独维护 pool。
 import logging
 from typing import Optional
 
@@ -31,10 +32,13 @@ logger = logging.getLogger(__name__)
 GB = 1024 * 1024 * 1024
 
 
+# VortexMLACachePool：MLA 模型使用的 KV pool，latent cache/rope/aux 字段和普通 K/V 不同。
 class VortexMLACachePool(MLATokenToKVPool):
 
+    is_vortex_pool = True
     supports_fused_set_kv_buffer = False
 
+    # 初始化：MLA latent cache 的布局和普通 K/V 不同，这里单独计算字段和 buffer。
     def __init__(
         self,
         size: int,
@@ -91,6 +95,7 @@ class VortexMLACachePool(MLATokenToKVPool):
     # ------------------------------------------------------------------ #
     # vortex aux buffers + compilation
     # ------------------------------------------------------------------ #
+    # 创建 MLA 辅助 buffer：保存 sparse decode 需要的 latent/rope 派生字段。
     def _create_aux_buffers(self):
         """Allocate the per-block aux tensors (everything except 'latent', which
         is the inherited kv_buffer)."""
@@ -113,6 +118,7 @@ class VortexMLACachePool(MLATokenToKVPool):
         cache.update(self.aux[li])
         return cache
 
+    # 编译 MLA cache flow：把用户策略里的 cache 描述变成每层可访问的 tensor 字段。
     def _compile(self, model_runner) -> None:
         """Trace the sparse-attention forward_cache on zero-sized dummies and
         compile it (mirrors VortexCachePool._compile, but 'latent' is provided
@@ -151,6 +157,7 @@ class VortexMLACachePool(MLATokenToKVPool):
     # ------------------------------------------------------------------ #
     # KV write — inherited scatter into kv_buffer, then refresh aux
     # ------------------------------------------------------------------ #
+    # 刷新辅助字段：当 latent KV 写入或移动后，同步更新 Vortex 需要的派生 cache。
     def _refresh_aux(self, layer, loc: torch.Tensor):
         """Recompute per-page aux (centroids) from the just-written latent."""
         if layer.layer_id in self.layers_skip:
@@ -166,6 +173,7 @@ class VortexMLACachePool(MLATokenToKVPool):
             cur_layer=layer.layer_id,
         )
 
+    # MLA 写入入口：SGLang 层把 latent K/V 写到这里，Vortex 后端后续 sparse decode 会读取。
     def set_mla_kv_buffer(
         self,
         layer: RadixAttention,
@@ -194,6 +202,7 @@ class VortexMLACachePool(MLATokenToKVPool):
     # ------------------------------------------------------------------ #
     # accessors for the vortex indexer / sparse decode
     # ------------------------------------------------------------------ #
+    # 统一 cache 入口：MLA attention backend 按层取 latent cache 和辅助字段。
     def get_cache(self, layer_id: int) -> dict:
         """{'latent': kv_buffer, 'centroids': aux, ...} consumed by the indexer."""
         return self._layer_cache(layer_id)

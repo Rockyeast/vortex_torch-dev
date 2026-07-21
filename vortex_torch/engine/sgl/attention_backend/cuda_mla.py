@@ -1,3 +1,4 @@
+# 中文读法：CUDA MLA 后端。它用手写 CUDA kernel 做 sparse MLA decode，并在 prefill 时走 MLAPrefill。
 from __future__ import annotations
 
 """
@@ -66,6 +67,7 @@ if TYPE_CHECKING:
 # latent buffer + merge_state, see MLAPrefill), so we must keep the per-head MHA
 # path for prefix>0 too. Decode and speculative paths still use absorbed MLA.
 # ---------------------------------------------------------------------------- #
+# 注册 torch dispatch：让外部 profiler/trace 可以按名字调用 CUDA MLA decode。
 def _register_cuda_mla_dispatch() -> None:
     try:
         from sglang.srt.models.deepseek_common.attention_backend_handler import (
@@ -99,9 +101,11 @@ def _register_cuda_mla_dispatch() -> None:
 _register_cuda_mla_dispatch()
 
 
+# VortexCudaMLABackend：手写 CUDA kernel 版本的 MLA sparse decode 后端。
 class VortexCudaMLABackend(AttentionBackend):
     """Standalone vortex sparse MLA backend on the hand-written CUDA decode kernel."""
 
+    # 初始化 MLA backend：保存 runner/cache，准备 latent KV 的 sparse decode 状态。
     def __init__(self, model_runner: "ModelRunner", skip_prefill: bool = False):
         super().__init__()
         sa = model_runner.server_args
@@ -185,6 +189,7 @@ class VortexCudaMLABackend(AttentionBackend):
         self._mla = self._capture_mla_params(model_runner)
         self._prefill = MLAPrefill(self.device)
 
+    # 捕获 MLA 模型参数：head 数、rope/head dim 等 kernel launch 必需信息。
     def _capture_mla_params(self, model_runner) -> dict:
         """Read the uniform MLA prefill geometry + softmax scale from the loaded
         model so plan() can run in init_forward_metadata (before any layer is
@@ -212,6 +217,7 @@ class VortexCudaMLABackend(AttentionBackend):
                 }
         raise RuntimeError("no MLA attention module found in model")
 
+    # 按 batch size 取 decoder：避免每次 decode 都重新创建 kernel wrapper。
     def _decoder_for(self, bs: int):
         dec = self._decoders.get(bs)
         if dec is None:
@@ -226,6 +232,7 @@ class VortexCudaMLABackend(AttentionBackend):
             self._decoders[bs] = dec
         return dec
 
+    # 规划本轮 decode：根据 seq_lens 计算 block_table/selected block 的 kernel 输入。
     def _plan(self, seq_lens: torch.Tensor) -> None:
         """Build the load-balanced work queue once for this decode step (shared by
         every layer's run()). sparse_seqlens were just filled by plan_decode."""
@@ -237,6 +244,7 @@ class VortexCudaMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # indexer compilation (single fused query "q")
     # ------------------------------------------------------------------ #
+    # 编译 MLA indexer flow：根据用户策略决定每步 decode 选哪些 latent KV block。
     def _compile(self, model_runner) -> None:
         device = model_runner.device
         indexer = self.sparse_attention.forward_indexer
@@ -279,6 +287,7 @@ class VortexCudaMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # per-batch metadata
     # ------------------------------------------------------------------ #
+    # 每次 forward 前准备 MLA 元数据：seq_lens、block_table、selected pages 都在这里整理。
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         self._dense.init_forward_metadata(forward_batch)
         if forward_batch.forward_mode.is_decode_or_idle():
@@ -311,9 +320,11 @@ class VortexCudaMLABackend(AttentionBackend):
                 has_prefix=has_prefix,
             )
 
+    # CUDA graph 初始化：为 MLA decode 的固定形状 replay 准备 buffer。
     def init_cuda_graph_state(self, max_bs, max_num_tokens, kv_indices_buf=None):
         self._dense.init_cuda_graph_state(max_bs, max_num_tokens, kv_indices_buf)
 
+    # CUDA graph capture：记录 MLA sparse decode 需要的 metadata 写入方式。
     def init_forward_metadata_capture_cuda_graph(
         self, bs, num_tokens, req_pool_indices, seq_lens, encoder_lens,
         forward_mode, spec_info,
@@ -330,6 +341,7 @@ class VortexCudaMLABackend(AttentionBackend):
             )
             self._plan(seq_lens)
 
+    # CUDA graph replay：复用 capture buffer，只刷新当前 batch 的动态长度和索引。
     def init_forward_metadata_replay_cuda_graph(
         self, bs, req_pool_indices, seq_lens, seq_lens_sum, encoder_lens,
         forward_mode, spec_info, seq_lens_cpu,
@@ -352,6 +364,7 @@ class VortexCudaMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # decode (sparse for non-skipped layers; dense otherwise)
     # ------------------------------------------------------------------ #
+    # MLA decode 路径：当前 token 查询 latent KV，只访问 selected blocks。
     def forward_decode(
         self,
         q: torch.Tensor,                 # fused [q_nope_out | q_pe]  [tokens, H, 576]
@@ -415,6 +428,7 @@ class VortexCudaMLABackend(AttentionBackend):
     # via MLAPrefill, functionally identical to TritonAttnBackend's extend; the
     # Triton helper is the fallback when the fast path is unavailable.
     # ------------------------------------------------------------------ #
+    # MLA prefill/extend 路径：处理 prompt 或多 token 扩展，decode 稀疏路径之外的注意力在这里接上。
     def forward_extend(
         self,
         q: torch.Tensor,

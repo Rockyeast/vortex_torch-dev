@@ -44,18 +44,17 @@ class Transpose(vOp):
             FORMAT.BATCHED if x._format == FORMAT.BATCHED else FORMAT.RAGGED
         )
 
-        # 创建输出 buffer 的元数据：[S, D1, D0]。
-        # S 来自运行时上下文，表示 pipeline 中的 page/token 数量。
-        S = ctx.max_num_pages
+        # 创建输出 buffer 的元数据：[S, D1, D0]。和其他 indexer op 一样，
+        # 前导轴用 0 作为动态 batch/page 占位符。
         D0, D1 = x.shape[1], x.shape[2]
         # 纯元数据 vTensor，不做真实内存分配。编译后的代码会提供存储；
         # 这里仅需要 shape/dtype/device 供 codegen 使用。
         self.output_buffer = vTensor(
-            shape=(S, D1, D0),
+            shape=(0, D1, D0),
             dtype=ctx.vortex_dtype,
             device=x.device,
             _format=self.output_format,
-            tensor_id=-1,  # 如有需要，由调用方或图登记逻辑设置
+            tensor_id=len(ctx.tensor_list),
         )
 
         for t in [x]:
@@ -63,5 +62,11 @@ class Transpose(vOp):
                 ctx.add_aux_flops(
                     t.shape[1] * t.shape[2]
                 )
+
+        ctx.tensor_list.append(self.output_buffer)
+        ctx.output_tensor_to_op_list.append(len(ctx.op_list))
+        ctx.op_list.append(self)
+        ctx.op_to_input_tensor_list.append([x.tensor_id])
+        ctx.op_to_output_tensor_list.append([self.output_buffer.tensor_id])
 
         return self.output_buffer

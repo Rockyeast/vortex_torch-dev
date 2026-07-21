@@ -11,6 +11,7 @@ The kernel (``csrc/mla_ldm.cuh``) is a from-scratch CUDA flash-decode: ldmatrix 
 softmax, a 576->584 smem bank-conflict pad, ``__launch_bounds__`` occupancy
 forcing, and split-KV. See ``cuda_mla/REPORT.md`` for the design + benchmarks.
 """
+# 中文读法：CUDA MLA kernel 封装层。这里负责加载 C++/CUDA 扩展、计算 launch geometry、分配临时 buffer、调用 decode kernel。
 import os
 
 import torch
@@ -26,6 +27,7 @@ _SM_COUNT: dict = {}
 _SPLITS_ENV = os.environ.get("VORTEX_CUDA_MLA_SPLITS")
 
 
+# 加载 CUDA 扩展：第一次调用时编译/加载手写 MLA decode kernel，后续复用缓存模块。
 def get_cuda_mla_module():
     """JIT-compile (once, process-cached) and return the CUDA MLA extension."""
     global _MODULE
@@ -56,6 +58,7 @@ def _sm_count(device) -> int:
 CKV = 512
 
 
+# launch 几何计算：根据 batch、head、block 数决定 CUDA grid/block 和 split 策略。
 def mla_decoder_geometry(bs: int, H: int, block_size: int, max_blocks: int,
                          max_split_cap: int = -1, chunk_min: int = -1, minb: int = -1):
     """Host-only launch geometry for a decode batch size — NO allocation. Returns a
@@ -67,6 +70,7 @@ def mla_decoder_geometry(bs: int, H: int, block_size: int, max_blocks: int,
             "target": target, "max_split_cap": cap, "chunk_min": cmin}
 
 
+# 临时 buffer 分配：decode kernel 需要的中间 logits/归约空间在这里一次性准备。
 def allocate_mla_buffers(max_bs: int, H: int, block_size: int, max_blocks: int,
                          device, max_split_cap: int = -1, chunk_min: int = -1,
                          minb: int = -1) -> dict:
@@ -99,6 +103,7 @@ def allocate_mla_buffers(max_bs: int, H: int, block_size: int, max_blocks: int,
     }
 
 
+# decoder 闭包：把固定参数和 buffer 绑定起来，返回后端每次 decode 可直接调用的函数。
 def make_mla_decoder(bs: int, H: int, block_size: int, max_blocks: int, buffers: dict,
                      max_split_cap: int = -1, chunk_min: int = -1, minb: int = -1):
     """flashinfer-style plan/run decoder. The launch geometry is fixed per (bs), but
@@ -115,6 +120,7 @@ def make_mla_decoder(bs: int, H: int, block_size: int, max_blocks: int, buffers:
         max_split_cap, chunk_min, minb)
 
 
+# CUDA decode 调用入口：把 block_table/latent cache/query 交给扩展 kernel，输出当前 token attention。
 def decode_blocktable_mla_cuda(
     q: torch.Tensor,            # [bs, H, Lk]   fused [q_nope_out | q_pe], Lk=576
     latent: torch.Tensor,       # [num_slots, Lk]  fused [kv_c | k_pe]

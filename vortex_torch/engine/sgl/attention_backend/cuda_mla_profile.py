@@ -1,3 +1,4 @@
+# 中文读法：CUDA MLA profile 后端。它继承 CUDA MLA 路径，但额外收集/打印性能和稀疏度统计。
 from __future__ import annotations
 
 """
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 # batch, absorbed MLA for decode). Self-registered on import so the engine can
 # select attention_backend="cuda_mla_profile" with the correct prefill path.
 # ---------------------------------------------------------------------------- #
+# 注册 profile dispatch：用于收集 CUDA MLA 路径的 sparse/decode 统计。
 def _register_cuda_mla_profile_dispatch() -> None:
     try:
         from sglang.srt.models.deepseek_common.attention_backend_handler import (
@@ -87,6 +89,7 @@ def _register_cuda_mla_profile_dispatch() -> None:
 _register_cuda_mla_profile_dispatch()
 
 
+# ProfileBackend：复用 CUDA MLA 计算路径，但额外记录调试和性能指标。
 class VortexCudaMLAProfileBackend(VortexCudaMLABackend):
     """``cuda_mla`` decode + per-token per-head coverage / recall@N profiling."""
 
@@ -125,6 +128,7 @@ class VortexCudaMLAProfileBackend(VortexCudaMLABackend):
         atexit.register(self._prof_dump)
 
     # ------------------------------------------------------------------ #
+    # profile slot：按 layer 聚合统计，避免每次打印造成巨大开销。
     def _prof_slots(self, layer_id: int):
         if layer_id not in self._prof_count:
             H, dev = self._prof_H, self._prof_dev
@@ -136,6 +140,7 @@ class VortexCudaMLAProfileBackend(VortexCudaMLABackend):
         return self._prof_pcov[layer_id], self._prof_recall[layer_id]
 
     @torch.no_grad()
+    # 累积 profile 指标：记录选中 block 数、序列长度、decode 调用次数等。
     def _prof_accumulate(self, q, layer, forward_batch):
         """Recompute the dense attention distribution for this decode step and
         accumulate p-coverage + recall@N for ``layer`` over the batch."""
@@ -202,6 +207,7 @@ class VortexCudaMLAProfileBackend(VortexCudaMLABackend):
             self._prof_dump()
 
     # ------------------------------------------------------------------ #
+    # profile decode：先走正常 CUDA MLA decode，再收集本次 sparse attention 统计。
     def forward_decode(
         self,
         q: torch.Tensor,
@@ -229,6 +235,7 @@ class VortexCudaMLAProfileBackend(VortexCudaMLABackend):
         return out
 
     # ------------------------------------------------------------------ #
+    # 输出 profile：把累计指标整理成日志，帮助判断 sparse path 是否真的生效。
     def _prof_dump(self) -> None:
         if not self._prof_count:
             return

@@ -25,6 +25,7 @@ uses the full 576 dims (``BLOCK_DMODEL=512`` latent ``+ BLOCK_DPE=64`` rope,
 matching the absorbed query ``[q_nope_out | q_pe]``), and the value reduction
 uses the first ``Lv = kv_lora_rank = 512`` dims.
 """
+# 中文读法：Triton MLA kernel 集合。这里是底层数值 kernel，主要关注输入 block_table、seq_lens、latent cache 如何算出当前 token attention。
 import torch
 import triton
 import triton.language as tl
@@ -42,6 +43,7 @@ def _get_sm_count(device) -> int:
 
 
 @triton.jit
+# Triton kernel：基础 block-table MLA decode，一次处理 selected blocks 并做 attention。
 def _fwd_blocktable_mla_kernel(
     Q,
     K_Buffer,          # fused latent [num_slots, Lk]  (Lk = 576)
@@ -162,6 +164,7 @@ def _fwd_blocktable_mla_kernel(
     )
 
 
+# Python wrapper：准备参数后调用基础 Triton MLA decode kernel。
 def decode_blocktable_mla(
     q: torch.Tensor,            # [bs, H, Lk]   fused [q_nope_out | q_pe], Lk=576
     latent: torch.Tensor,       # [num_slots, Lk]  fused [kv_c | k_pe]
@@ -231,6 +234,7 @@ _MIN_BLOCK_KV = 64
 
 
 @triton.jit
+# Split-kernel stage1：长序列/多 block 时先分段计算局部结果。
 def _fwd_blocktable_split_stage1(
     Q, K_Buffer, V_Buffer, sm_scale,
     Seqlens, Block_Table, num_kv_splits,
@@ -315,6 +319,7 @@ def _fwd_blocktable_split_stage1(
 
 
 @triton.jit
+# Split-kernel stage2：把 stage1 的局部结果归并成最终 attention 输出。
 def _fwd_blocktable_split_stage2(
     Mid_O, Mid_Lse, O, Seqlens, num_kv_splits,
     stride_mid_ob, stride_mid_oh, stride_mid_os,
@@ -669,6 +674,7 @@ def decode_blocktable_mla_tma_split(
     return o
 
 
+# 自动选择入口：根据 shape/硬件在普通、split、TMA 等实现之间选一个。
 def decode_blocktable_mla_auto(
     q, latent, block_table, seqlens, sm_scale, block_size, kv_lora_rank, o=None,
 ):
@@ -724,6 +730,7 @@ def decode_blocktable_mla_auto(
 _PLAN_SATURATE_PROG = 128   # prog at/above which single-pass fills the SMs (B200)
 
 
+# 计划选择：用 batch/head/block 信息决定 decode 走哪种 kernel 配置。
 def plan_select(bs, block_size, num_query_heads):
     """Pure pre-set dispatch rule → kernel name. No GPU, no seqlens, no profiling
     (cuda-graph-capture safe — decided from host-known shape ints only).
@@ -736,6 +743,7 @@ def plan_select(bs, block_size, num_query_heads):
     return "kv_split_opt"
 
 
+# 计划化 decode：外部已经选好 plan 时从这里执行。
 def decode_blocktable_mla_plan(
     q, latent, block_table, seqlens, sm_scale, block_size, kv_lora_rank, o=None,
 ):

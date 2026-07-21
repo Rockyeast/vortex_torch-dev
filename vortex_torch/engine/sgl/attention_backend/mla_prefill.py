@@ -1,3 +1,4 @@
+# 中文读法：MLA prefill 辅助层。decode 用 sparse selected pages，prefill 阶段仍需要专门处理 latent KV 的写入和预热。
 from __future__ import annotations
 
 """
@@ -57,10 +58,12 @@ from typing import Optional
 import torch
 
 
+# MLAPrefill：MLA prefill 阶段的专用 helper，负责 plan/run 和 latent KV 写入。
 class MLAPrefill:
     """flashinfer ragged-KV (FA3/cutlass sm100) dense MLA prefill with prefix
     handled via reconstruct-from-latent + ``merge_state``."""
 
+    # 初始化 prefill helper：准备 workspace 和 KV layout，给 MLA prompt 阶段使用。
     def __init__(self, device, *, kv_layout: str = "NHD", workspace_mb: int = 128):
         import flashinfer
 
@@ -82,6 +85,7 @@ class MLAPrefill:
         self._has_prefix = False                             # set by plan()
 
     # ------------------------------------------------------------------ #
+    # prefill plan：根据 prompt 长度和 block_table 规划一次 prefill attention。
     def plan(
         self,
         *,
@@ -145,6 +149,7 @@ class MLAPrefill:
 
     # ------------------------------------------------------------------ #
     @staticmethod
+    # 重建 prefix KV：从 latent cache 还原 prefill kernel 需要的 K/V 表示。
     def _reconstruct_prefix_kv(
         key_buffer: torch.Tensor,      # [N, 1, kv_lora_rank + qk_rope_head_dim]
         kv_indices: torch.Tensor,      # [P] prefix token locations in the pool
@@ -175,6 +180,7 @@ class MLAPrefill:
         return k, v
 
     # ------------------------------------------------------------------ #
+    # 执行 prefill：按 plan 跑 MLA prefill kernel，并把结果写回输出 tensor。
     def run(
         self,
         q: torch.Tensor,

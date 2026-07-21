@@ -1,3 +1,4 @@
+# 中文读法：离线配置验证和引擎工厂。这里检查 vortex JSON 是否合理、策略模块能否加载/编译，并按配置创建对应 engine；不负责真正 decode。
 import json
 import re
 import tempfile
@@ -22,6 +23,7 @@ return max(static_kv_budget, dynamic_kv_budget);
 MODEL_PATH = "Qwen/Qwen3-1.7B"
 
 
+# 运行时工厂：Python 直接传参数时走这里。它先把参数规整成 VortexConfig，再把 flow/backend 包成 engine 对象。
 def get_engine(
     *,
     model_path: str = MODEL_PATH,
@@ -77,6 +79,7 @@ def get_engine(
     return sgl.Engine(**engine_kwargs)
 
 
+# JSON 工厂：命令行或实验配置传一个 json 文件时走这里，先做静态检查，再复用 get_engine() 创建 engine。
 def get_engine_from_json(config_path: str | Path):
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -89,10 +92,12 @@ def get_engine_from_json(config_path: str | Path):
 # Pre-flight checks for an engine JSON
 # ---------------------------------------------------------------------------
 
+# 配置错误类型：把“用户配置不合法”和普通 RuntimeError 区分开，方便上层报清楚。
 class EngineConfigError(ValueError):
     """Raised when an engine JSON fails any pre-flight validation step."""
 
 
+# 小工具：把 JSON 里的数字字段强制转成 int，失败时给出带字段名的错误。
 def _coerce_int(x: Any, label: str) -> int:
     """Coerce a JSON-loaded number to an ``int``.
 
@@ -115,6 +120,7 @@ def _is_pow2(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
 
 
+# 策略模块路径解析：支持相对 json 文件的 module_path，也支持绝对路径。
 def _resolve_module_path(json_path: Path, raw: str) -> Path:
     """``vortex_module_path`` may be absolute, CWD-relative, or relative to
     the JSON file. Try each in that order and return the first that exists."""
@@ -129,6 +135,7 @@ def _resolve_module_path(json_path: Path, raw: str) -> Path:
     )
 
 
+# 策略模块检查：确认用户给的 flow 文件确实注册了指定的 sparse attention 类。
 def _check_registers_class(module_path: Path, module_name: str) -> None:
     """Heuristic source-level check that the file declares
     ``@register("<module_name>")`` somewhere — catches typos before we run
@@ -144,6 +151,7 @@ def _check_registers_class(module_path: Path, module_name: str) -> None:
 _INDEXER_SAVE_PATTERN = re.compile(r"\bSave\s*\(")
 
 
+# 编译前扫描：确认 flow 里是否使用 indexer.save 这类 Vortex 需要的记录接口。
 def _flow_uses_indexer_save(module_path: Path) -> bool:
     """Return True iff the submission file contains an indexer-side ``Save(``
     call (the persistent state pattern paired with ``Load`` and
@@ -156,6 +164,7 @@ def _flow_uses_indexer_save(module_path: Path) -> bool:
     return bool(_INDEXER_SAVE_PATTERN.search(src))
 
 
+# SGLang 兼容检查：部分 sparse flow 不能和 radix cache 同时开，这里提前拦掉危险配置。
 def _check_disable_radix_cache(module_path: Path, config: Dict[str, Any]) -> None:
     """If the flow uses ``Save(...)`` in the indexer, the engine config
     must set ``disable_radix_cache: true``. Otherwise sglang's prefix
@@ -175,6 +184,7 @@ def _check_disable_radix_cache(module_path: Path, config: Dict[str, Any]) -> Non
         )
 
 
+# 模型结构读取：从 HuggingFace config 推出 head_dim/head 数等，给后续编译和 shape 校验用。
 def _read_hf_model_shapes(model_path: str) -> Dict[str, int]:
     """Resolve ``config.json`` for a model and return the GQA shapes
     used to drive the compile sweep.
@@ -288,6 +298,7 @@ def _read_hf_model_shapes(model_path: str) -> Dict[str, int]:
     return {"G": nq // nkv, "num_kv_heads": nkv, "head_dim": D}
 
 
+# 编译可行性检查：构造最小 dummy 输入跑 profile/compile，提前发现策略或 shape 不兼容。
 def _check_compilable(
     module_path: Path,
     module_name: str,
@@ -380,6 +391,7 @@ def _check_compilable(
             )
 
 
+# JSON 主检查入口：把字段校验、路径解析、模型 shape、编译扫描串起来，返回规整后的配置 dict。
 def check_engine_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Validate an engine JSON config end-to-end.
 

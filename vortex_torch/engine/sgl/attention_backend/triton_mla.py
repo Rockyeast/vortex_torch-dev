@@ -1,3 +1,4 @@
+# 中文读法：Triton MLA 后端。它把 MLA block-table decode 交给本仓库的 Triton kernel 实现。
 from __future__ import annotations
 
 """
@@ -46,9 +47,11 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
 
+# VortexTritonMLABackend：Triton kernel 版本的 MLA sparse decode 后端。
 class VortexTritonMLABackend(AttentionBackend):
     """Standalone vortex sparse MLA backend on the Triton decode kernel."""
 
+    # 初始化 MLA backend：保存 runner/cache，准备 latent KV 的 sparse decode 状态。
     def __init__(self, model_runner: "ModelRunner", skip_prefill: bool = False):
         super().__init__()
         sa = model_runner.server_args
@@ -98,6 +101,7 @@ class VortexTritonMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # indexer compilation (single fused query "q")
     # ------------------------------------------------------------------ #
+    # 编译 MLA indexer flow：根据用户策略决定每步 decode 选哪些 latent KV block。
     def _compile(self, model_runner) -> None:
         device = model_runner.device
         indexer = self.sparse_attention.forward_indexer
@@ -140,6 +144,7 @@ class VortexTritonMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # per-batch metadata
     # ------------------------------------------------------------------ #
+    # 每次 forward 前准备 MLA 元数据：seq_lens、block_table、selected pages 都在这里整理。
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         self._dense.init_forward_metadata(forward_batch)
         if forward_batch.forward_mode.is_decode_or_idle():
@@ -150,9 +155,11 @@ class VortexTritonMLABackend(AttentionBackend):
                 ctx=self.ctx,
             )
 
+    # CUDA graph 初始化：为 MLA decode 的固定形状 replay 准备 buffer。
     def init_cuda_graph_state(self, max_bs, max_num_tokens, kv_indices_buf=None):
         self._dense.init_cuda_graph_state(max_bs, max_num_tokens, kv_indices_buf)
 
+    # CUDA graph capture：记录 MLA sparse decode 需要的 metadata 写入方式。
     def init_forward_metadata_capture_cuda_graph(
         self, bs, num_tokens, req_pool_indices, seq_lens, encoder_lens,
         forward_mode, spec_info,
@@ -168,6 +175,7 @@ class VortexTritonMLABackend(AttentionBackend):
                 req_indices=req_pool_indices, ctx=self.ctx,
             )
 
+    # CUDA graph replay：复用 capture buffer，只刷新当前 batch 的动态长度和索引。
     def init_forward_metadata_replay_cuda_graph(
         self, bs, req_pool_indices, seq_lens, seq_lens_sum, encoder_lens,
         forward_mode, spec_info, seq_lens_cpu,
@@ -189,6 +197,7 @@ class VortexTritonMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # decode (sparse for non-skipped layers; dense otherwise)
     # ------------------------------------------------------------------ #
+    # MLA decode 路径：当前 token 查询 latent KV，只访问 selected blocks。
     def forward_decode(
         self,
         q: torch.Tensor,                 # fused [q_nope_out | q_pe]  [tokens, H, 576]
@@ -225,6 +234,7 @@ class VortexTritonMLABackend(AttentionBackend):
         cache = forward_batch.token_to_kv_pool.get_cache(layer.layer_id)
         self.compiled_indexer.forward(
             q=query, o=md.sparse_block_tables, cache=cache, ctx=self.ctx,
+            cur_layer=layer.layer_id,
         )
 
         # 3) block-sparse MLA decode in Triton over the fused latent.
@@ -246,5 +256,6 @@ class VortexTritonMLABackend(AttentionBackend):
     # ------------------------------------------------------------------ #
     # prefill — always dense (no sparsity), delegated to the dense helper
     # ------------------------------------------------------------------ #
+    # MLA prefill/extend 路径：通常委托给 prefill helper 或原有后端，decode 才是 sparse 重点。
     def forward_extend(self, *args, **kwargs):
         return self._dense.forward_extend(*args, **kwargs)

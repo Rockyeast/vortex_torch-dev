@@ -17,6 +17,7 @@ Adding a new backend:
   2. Re-export the class below — keep the registry deterministic so
      ``model_runner.py`` can pick it by name.
 """
+# 中文读法：attention backend 导出表。integration.py 注册 backend 时会从这里拿到具体实现。
 from vortex_torch.engine.sgl.attention_backend.flashinfer import (
     VortexFlashInferBackend,
 )

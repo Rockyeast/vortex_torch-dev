@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
+# 中文读法：标准 MHA/GQA KV cache 的 Vortex 版本。它在 SGLang 原 KV pool 外增加 sparse flow 需要的 cache/indexer 字段。
 import logging
 from typing import List, Optional, Tuple, Union, Dict
 
@@ -55,7 +56,10 @@ We
 then we interpret external auguments to the physical address
 """
 
+# VortexCachePool：普通 MHA/GQA 模型使用的 KV pool，除了 K/V tensor，还保存 sparse flow 需要的额外 cache 字段。
 class VortexCachePool(KVCache):
+
+    is_vortex_pool = True
 
     # Vortex stores K/V in a block-interleaved layout (see
     # vortex_torch/cache/triton_kernels/set_kv.py — position is mapped to
@@ -67,6 +71,7 @@ class VortexCachePool(KVCache):
     # ``models/utils.py::enable_fused_set_kv_buffer`` returns False here.
     supports_fused_set_kv_buffer = False
 
+    # 初始化：接管 SGLang 原 KV cache 参数，并准备 Vortex 额外 cache 字段的布局。
     def __init__(
         self,
         size: int,
@@ -123,6 +128,7 @@ class VortexCachePool(KVCache):
             raise ValueError(f"Unsupported dtype {self.dtype} for KV cache")
         self.set_kv_buffer_func = _SET_KV_LAUNCHERS[self.dtype]
         
+    # 编译 cache 相关 flow：让用户策略里的 create_cache 字段变成真正的 tensor/buffer 规划。
     def _compile(self, model_runner) -> None:
         """Trace the sparse-attention cache flow on zero-sized dummies and compile it."""
         self.ctx.create(self, model_runner)
@@ -152,6 +158,7 @@ class VortexCachePool(KVCache):
 
 
 
+    # 创建额外 buffer：除了原生 K/V，还为 Vortex indexer/cache graph 分配辅助存储。
     def _create_buffers(self):
         
         self.cache_meta_info = self.sparse_attention.get_cache_meta_info()
@@ -179,6 +186,7 @@ class VortexCachePool(KVCache):
         del self.cache
        
 
+    # 统计 cache 总内存：SGLang 分配 KV pool 前会问每个 token/page 需要多少 bytes。
     def get_cache_size_bytes(self) -> int:
         """
         Return total bytes occupied by all tensors in `self.cache`.
@@ -205,8 +213,7 @@ class VortexCachePool(KVCache):
         return total_bytes
     
     def get_kv_size_bytes(self):
-        
-        raise NotImplementedError
+        return self.get_cache_size_bytes()
     
     # for disagg (PD disaggregation, Option B)
     def get_contiguous_buf_infos(self):
@@ -244,6 +251,7 @@ class VortexCachePool(KVCache):
             item_lens.append(t.element_size() * page_item_numel)
         return ptrs, data_lens, item_lens
 
+    # 重建辅助索引：KV cache 发生移动/重排后，同步修复 Vortex 的辅助 cache 字段。
     def rebuild_aux(self, loc: torch.Tensor):
         """Decode-side (PD disagg): rebuild the per-page auxiliary cache
         (centroids / min-max envelopes, etc.) and zero the persistent
@@ -267,17 +275,18 @@ class VortexCachePool(KVCache):
             if layer_id in self.layers_skip:
                 continue
             self.compiled_cache.forward(
-                self.cache[layer_id - self.start_layer], loc, ctx=self.ctx
+                self.cache[layer_id - self.start_layer], loc, ctx=self.ctx,
+                cur_layer=layer_id,
             )
 
     def maybe_get_custom_mem_pool(self):
         return self.custom_mem_pool
 
-    def get_cpu_copy(self, indices):
+    def get_cpu_copy(self, indices, mamba_indices=None):
         
         raise NotImplementedError
 
-    def load_cpu_copy(self, kv_cache_cpu, indices):
+    def load_cpu_copy(self, kv_cache_cpu, indices, mamba_indices=None):
         
         raise NotImplementedError
 
@@ -310,11 +319,13 @@ class VortexCachePool(KVCache):
         return self.cache[layer_id - self.start_layer]["k"], self.cache[layer_id - self.start_layer]["v"]
 
         
+    # 统一 cache 入口：attention backend 按 layer_id 拿到 K/V 和 Vortex 额外字段。
     def get_cache(self, layer_id: int)->Dict[str, torch.Tensor]:
         
         return self.cache[layer_id - self.start_layer]
 
         
+    # 写入 KV：SGLang 生成新 token 后把当前层 K/V 写入 Vortex cache pool。
     def set_kv_buffer(
         self,
         layer: RadixAttention,
@@ -359,7 +370,10 @@ class VortexCachePool(KVCache):
         )
         if layer_id in self.layers_skip:
             return
-        self.compiled_cache.forward(self.cache[layer_id - self.start_layer], loc, ctx=self.ctx)
+        self.compiled_cache.forward(
+            self.cache[layer_id - self.start_layer], loc, ctx=self.ctx,
+            cur_layer=layer_id,
+        )
         
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
         

@@ -1,3 +1,4 @@
+# 中文读法：FlashInfer 后端。Vortex 选出的历史 page 会被整理成 FlashInfer 稀疏 attention 需要的 indices/indptr 等格式。
 from __future__ import annotations
 
 """
@@ -22,8 +23,9 @@ from vortex_torch.indexer.utils_sglang import (
     get_chunkwise_nh2hn_transpose,
     get_decode_planner,
     get_prefill_planner,
+    normalize_prefill_seq_lens,
 )
-if os.environ["SGLANG_ENABLE_TORCH_COMPILE"] == "1":
+if os.environ.get("SGLANG_ENABLE_TORCH_COMPILE") == "1":
     import logging
 
     torch._logging.set_logs(dynamo=logging.ERROR)
@@ -48,10 +50,12 @@ if is_flashinfer_available():
     from flashinfer.decode import _get_range_buf, get_seq_lens
 
 @dataclass
+# DecodeMetadata：一次 decode 前准备好的索引/长度等元数据，避免每层重复整理。
 class DecodeMetadata:
     decode_wrappers: List[BatchDecodeWithPagedKVCacheWrapper]
 
 @dataclass
+# PrefillMetadata：prefill 阶段需要的元数据；decode sparse 路径和 prefill 路径分开处理。
 class PrefillMetadata:
     extend_no_prefix: bool
 
@@ -60,9 +64,11 @@ class PrefillMetadata:
 global_workspace_buffer = None
 
 
+# VortexFlashInferBackend：标准 MHA/GQA 的 FlashInfer sparse attention 实现。
 class VortexFlashInferBackend(AttentionBackend):
     """Flashinfer attention kernels."""
 
+    # 初始化 backend：保存 runner/KV pool/wrapper，准备 sparse decode 所需的运行时状态。
     def __init__(
         self,
         model_runner: ModelRunner,
@@ -232,6 +238,7 @@ class VortexFlashInferBackend(AttentionBackend):
         self.plan_graph: Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.cuda.CUDAGraph]]
     
 
+    # 编译 indexer flow：把用户 sparse 策略转成 decode 时能直接选 page 的 compiled indexer。
     def _compile(self, model_runner: "ModelRunner") -> None:
         """Trace the sparse-attention indexer on zero-sized dummies and compile it."""
         device = model_runner.device
@@ -285,6 +292,7 @@ class VortexFlashInferBackend(AttentionBackend):
         self.ctx.execute()
 
     
+    # 每次 forward 前准备元数据：根据 batch 的 seq_lens/positions 计算 selected pages 和后端输入格式。
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         
         assert not forward_batch.forward_mode.is_draft_extend()
@@ -327,7 +335,10 @@ class VortexFlashInferBackend(AttentionBackend):
 
         elif forward_batch.forward_mode.is_extend():
             
-            prefix_lens = forward_batch.extend_prefix_lens
+            prefix_lens, input_seq_lens = normalize_prefill_seq_lens(
+                forward_batch.seq_lens,
+                forward_batch.extend_prefix_lens,
+            )
             extend_no_prefix = not any(forward_batch.extend_prefix_lens_cpu)
             bs = len(forward_batch.req_pool_indices)
             
@@ -335,7 +346,7 @@ class VortexFlashInferBackend(AttentionBackend):
                 cached_seq_lens=prefix_lens,
                 dense_kv_indptr=self.kv_indptr_prefill[:bs*self.num_kv_heads+1],
                 dense_kv_indices=self.kv_indices_prefill,
-                input_seq_lens=(forward_batch.seq_lens.to(torch.int32) - prefix_lens),
+                input_seq_lens=input_seq_lens,
                 qo_indptr_ragged=self.qo_indptr[0][:bs+1],
                 qo_indptr_paged=self.qo_indptr[1][:bs*self.num_kv_heads+1],
                 kv_last_page_len=self.kv_last_page_len_prefill[:bs*self.num_kv_heads],
@@ -374,6 +385,7 @@ class VortexFlashInferBackend(AttentionBackend):
 
             self.forward_metadata = PrefillMetadata(extend_no_prefix)
 
+    # CUDA graph 初始化：为固定 batch size 的 replay 预分配元数据 buffer。
     def init_cuda_graph_state(
         self,
         max_bs: int,
@@ -391,6 +403,7 @@ class VortexFlashInferBackend(AttentionBackend):
         
         pass
 
+    # CUDA graph capture：捕获阶段把 metadata 写入固定 buffer，后续 replay 可复用。
     def init_forward_metadata_capture_cuda_graph(
         self,
         bs: int,
@@ -468,6 +481,7 @@ class VortexFlashInferBackend(AttentionBackend):
             raise NotImplementedError
             
 
+    # CUDA graph replay：复用 capture 时的 buffer，只更新当前 step 必需的动态字段。
     def init_forward_metadata_replay_cuda_graph(
         self,
         bs: int,
@@ -516,6 +530,7 @@ class VortexFlashInferBackend(AttentionBackend):
         
         return 1
 
+    # prefill/extend 路径：处理 prompt 或一次加入多个 token 的 attention。
     def forward_extend(
         self,
         q: torch.Tensor,
@@ -591,6 +606,7 @@ class VortexFlashInferBackend(AttentionBackend):
 
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
+    # decode 路径：单步生成 token 时，只对 Vortex 选中的历史 page 做 attention。
     def forward_decode(
         self,
         q: torch.Tensor,
@@ -644,7 +660,8 @@ class VortexFlashInferBackend(AttentionBackend):
                 q=q,
                 o=self.forward_metadata.decode_wrappers[1]._paged_kv_indices_buf,
                 cache=cache,
-                ctx=self.ctx
+                ctx=self.ctx,
+                cur_layer=layer.layer_id,
             )
 
             # Sparse attention compute

@@ -1,3 +1,4 @@
+# 中文读法：TensorRT-LLM 后端。这里把 Vortex 选中的 page 整理成 block_table / seq_lens，再交给 TRTLLM kernel。
 from __future__ import annotations
 
 """
@@ -20,6 +21,7 @@ from vortex_torch.indexer.utils_sglang import (
     get_chunkwise_nh2hn_transpose,
     get_decode_planner_trtllm,
     get_prefill_planner,
+    normalize_prefill_seq_lens,
 )
 if os.environ["SGLANG_ENABLE_TORCH_COMPILE"] == "1":
     import logging
@@ -45,6 +47,7 @@ if is_flashinfer_available():
 
 
 @dataclass
+# DecodeMetadata：TRTLLM decode kernel 需要的 block_table、seq_lens 等运行时元数据。
 class DecodeMetadata:
     # Index 0 = dense path; index 1 = sparse path (refreshed per layer).
     block_tables: List[torch.Tensor]
@@ -52,6 +55,7 @@ class DecodeMetadata:
     bs: int  # effective batch = real_bs * num_kv_heads
 
 @dataclass
+# PrefillMetadata：TRTLLM prefill 路径的元数据。
 class PrefillMetadata:
     extend_no_prefix: bool
 
@@ -60,9 +64,11 @@ class PrefillMetadata:
 global_workspace_buffer = None
 
 
+# VortexTRTLLMBackend：把 selected pages 转成 TRTLLM paged attention 输入。
 class VortexTRTLLMBackend(AttentionBackend):
     """Flashinfer trtllm attention kernels."""
 
+    # 初始化 backend：保存 runner/KV pool/wrapper，准备 sparse decode 所需的运行时状态。
     def __init__(
         self,
         model_runner: ModelRunner,
@@ -231,6 +237,7 @@ class VortexTRTLLMBackend(AttentionBackend):
 
 
 
+    # 编译 indexer flow：把用户 sparse 策略转成 decode 时能直接选 page 的 compiled indexer。
     def _compile(self, model_runner: "ModelRunner") -> None:
         """Trace the sparse-attention indexer on zero-sized dummies and compile it."""
         device = model_runner.device
@@ -283,6 +290,7 @@ class VortexTRTLLMBackend(AttentionBackend):
         self.ctx.execute()
 
     
+    # 每次 forward 前准备元数据：根据 batch 的 seq_lens/positions 计算 selected pages 和后端输入格式。
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         
         assert not forward_batch.forward_mode.is_draft_extend()
@@ -319,7 +327,10 @@ class VortexTRTLLMBackend(AttentionBackend):
 
         elif forward_batch.forward_mode.is_extend():
             
-            prefix_lens = forward_batch.extend_prefix_lens
+            prefix_lens, input_seq_lens = normalize_prefill_seq_lens(
+                forward_batch.seq_lens,
+                forward_batch.extend_prefix_lens,
+            )
             extend_no_prefix = not any(forward_batch.extend_prefix_lens_cpu)
             bs = len(forward_batch.req_pool_indices)
             
@@ -327,7 +338,7 @@ class VortexTRTLLMBackend(AttentionBackend):
                 cached_seq_lens=prefix_lens,
                 dense_kv_indptr=self.kv_indptr_prefill[:bs*self.num_kv_heads+1],
                 dense_kv_indices=self.kv_indices_prefill,
-                input_seq_lens=(forward_batch.seq_lens.to(torch.int32) - prefix_lens),
+                input_seq_lens=input_seq_lens,
                 qo_indptr_ragged=self.qo_indptr[0][:bs+1],
                 qo_indptr_paged=self.qo_indptr[1][:bs*self.num_kv_heads+1],
                 kv_last_page_len=self.kv_last_page_len_prefill[:bs*self.num_kv_heads],
@@ -366,6 +377,7 @@ class VortexTRTLLMBackend(AttentionBackend):
 
             self.forward_metadata = PrefillMetadata(extend_no_prefix)
 
+    # CUDA graph 初始化：为固定 batch size 的 replay 预分配元数据 buffer。
     def init_cuda_graph_state(
         self,
         max_bs: int,
@@ -374,6 +386,7 @@ class VortexTRTLLMBackend(AttentionBackend):
     ):
         pass
 
+    # CUDA graph capture：捕获阶段把 metadata 写入固定 buffer，后续 replay 可复用。
     def init_forward_metadata_capture_cuda_graph(
         self,
         bs: int,
@@ -417,6 +430,7 @@ class VortexTRTLLMBackend(AttentionBackend):
             raise NotImplementedError
             
 
+    # CUDA graph replay：复用 capture 时的 buffer，只更新当前 step 必需的动态字段。
     def init_forward_metadata_replay_cuda_graph(
         self,
         bs: int,
@@ -446,6 +460,7 @@ class VortexTRTLLMBackend(AttentionBackend):
         
         return 1
 
+    # prefill/extend 路径：处理 prompt 或一次加入多个 token 的 attention。
     def forward_extend(
         self,
         q: torch.Tensor,
@@ -521,6 +536,7 @@ class VortexTRTLLMBackend(AttentionBackend):
 
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
+    # decode 路径：单步生成 token 时，只对 Vortex 选中的历史 page 做 attention。
     def forward_decode(
         self,
         q: torch.Tensor,
@@ -584,6 +600,7 @@ class VortexTRTLLMBackend(AttentionBackend):
                 o=self.ctx.metadata.sparse_block_tables,
                 cache=cache,
                 ctx=self.ctx,
+                cur_layer=layer.layer_id,
             )
             o = trtllm_batch_decode_with_kv_cache(
                 query=q,
