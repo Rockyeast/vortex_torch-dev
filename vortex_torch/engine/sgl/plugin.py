@@ -131,7 +131,19 @@ def _validate_runner(runner) -> None:
     if not server_args.enable_vortex_sparsity:
         return
 
-    from sglang.srt.configs.model_config import is_deepseek_nsa, is_deepseek_v4
+    # These helpers are version-specific. Missing helpers mean the matching
+    # model family is unavailable in the installed SGLang release.
+    try:
+        from sglang.srt.configs.model_config import is_deepseek_nsa
+    except ImportError:
+        def is_deepseek_nsa(config):
+            return False
+
+    try:
+        from sglang.srt.configs.model_config import is_deepseek_v4
+    except ImportError:
+        def is_deepseek_v4(config):
+            return False
     from sglang.srt.platforms import current_platform
 
     unsupported = []

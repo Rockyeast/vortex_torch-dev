@@ -123,6 +123,9 @@ class VortexFlashInferBackend(AttentionBackend):
         
         # Assign key configuration and parameters
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
+        # Newer SGLang versions keep the KV pool on ModelRunner instead of
+        # copying it onto each ForwardBatch.
+        self.token_to_kv_pool = model_runner.token_to_kv_pool
         self.page_size = model_runner.server_args.page_size
         self.block_size = model_runner.server_args.vortex_block_size
         self.layers_skip = model_runner.server_args.vortex_layers_skip
@@ -288,7 +291,16 @@ class VortexFlashInferBackend(AttentionBackend):
     
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         
-        assert not forward_batch.forward_mode.is_draft_extend()
+        mode = forward_batch.forward_mode
+        is_draft_extend = getattr(mode, "is_draft_extend", None)
+        if callable(is_draft_extend):
+            draft_extend = is_draft_extend()
+        else:
+            draft_extend = getattr(mode, "name", "") in {
+                "DRAFT_EXTEND",
+                "DRAFT_EXTEND_V2",
+            }
+        assert not draft_extend
         assert not forward_batch.forward_mode.is_target_verify()
         
         if forward_batch.forward_mode.is_decode_or_idle():
@@ -567,7 +579,7 @@ class VortexFlashInferBackend(AttentionBackend):
             )
             
             
-            k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+            k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
             k_cache = k_cache.view(-1, self.page_size, 1, self.head_dim)
             v_cache = v_cache.view(-1, self.page_size, 1, self.head_dim)
             o2, s2 = self.prefill_wrapper_paged.forward_return_lse(
@@ -589,7 +601,7 @@ class VortexFlashInferBackend(AttentionBackend):
             o, _ = merge_state(o1, s1, o2_t, s2_t)
 
         if save_kv_cache:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
 
@@ -617,12 +629,12 @@ class VortexFlashInferBackend(AttentionBackend):
         if k is not None:
             assert v is not None
             if save_kv_cache:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
 
         # Read Cache from memory pool
-        cache = forward_batch.token_to_kv_pool.get_cache(layer.layer_id)
+        cache = self.token_to_kv_pool.get_cache(layer.layer_id)
         
         cache_k = cache["k"].view(-1, self.block_size, 1, self.head_dim)
         cache_v = cache["v"].view(-1, self.block_size, 1, self.head_dim)
