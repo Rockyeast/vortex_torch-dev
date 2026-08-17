@@ -128,7 +128,7 @@ class VortexFlashInferBackend(AttentionBackend):
         self.token_to_kv_pool = model_runner.token_to_kv_pool
         self.page_size = model_runner.server_args.page_size
         self.block_size = model_runner.server_args.vortex_block_size
-        self.layers_skip = model_runner.server_args.vortex_layers_skip
+        self.layers_skip = model_runner.server_args.vortex_layers_skip or []
         self.num_blocks_per_page = self.page_size // self.block_size
         assert self.page_size % self.block_size == 0, "Page size must be a multiple of block size."
         # ===========================
@@ -228,6 +228,26 @@ class VortexFlashInferBackend(AttentionBackend):
         self.chunkwise_hn2nh_transpose = get_chunkwise_hn2nh_transpose()
 
         self.sparse_attention = model_runner.sparse_attention
+        self.use_frozen_dynamic_top_p = getattr(
+            self.sparse_attention, "is_frozen_dynamic_top_p", False
+        )
+        self.frozen_dynamic_top_p_temperature = None
+        if self.use_frozen_dynamic_top_p:
+            from vortex_torch.engine.sgl.frozen_dynamic_top_p import (
+                validate_frozen_runtime,
+            )
+
+            self.frozen_dynamic_top_p_temperature = validate_frozen_runtime(
+                model_path=model_runner.model_config.model_path,
+                temperature=model_runner.server_args.vortex_frozen_temperature,
+                page_size=self.page_size,
+                block_size=self.block_size,
+                kv_dtype=self.data_type,
+            )
+        self._frozen_dynamic_top_p_last = None
+        self._frozen_dynamic_top_p_workspace = None
+        self._frozen_dynamic_top_p_capture_metadata = None
+        self._frozen_dynamic_top_p_capture_metadata_key = None
         self.ctx = Context()
         self._compile(model_runner)
         # Other metadata
@@ -241,6 +261,12 @@ class VortexFlashInferBackend(AttentionBackend):
         device = model_runner.device
         dtype = self.q_data_type
         indexer = self.sparse_attention.forward_indexer
+
+        if self.use_frozen_dynamic_top_p:
+            self.ctx.create(self, model_runner)
+            self.ctx.assert_created()
+            self.compiled_indexer = None
+            return
 
         self.ctx.create(self, model_runner)
         # Allocate every per-forward-batch buffer (winfo_*, dense/sparse
@@ -396,7 +422,54 @@ class VortexFlashInferBackend(AttentionBackend):
         max_num_tokens: int,
         kv_indices_buf: Optional[torch.Tensor] = None,
     ):
-        pass
+        if self.use_frozen_dynamic_top_p:
+            from vortex_torch.engine.sgl.frozen_dynamic_top_p import (
+                allocate_decode_workspace,
+            )
+
+            max_blocks = max(
+                1,
+                (self.max_context_len + self.block_size - 1) // self.block_size,
+            )
+            self._frozen_dynamic_top_p_workspace = allocate_decode_workspace(
+                max_batch=max_bs,
+                max_blocks=max_blocks,
+                q_heads=self.num_qo_heads,
+                kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                device=self.req_to_token.device,
+                dtype=self.q_data_type,
+            )
+
+    def _prepare_frozen_decode_metadata(
+        self,
+        req_pool_indices: torch.Tensor,
+        seq_lens: torch.Tensor,
+    ):
+        if not self.use_frozen_dynamic_top_p:
+            return None
+        from vortex_torch.engine.sgl.frozen_dynamic_top_p import build_decode_metadata
+
+        metadata = build_decode_metadata(
+            self.req_to_token,
+            req_pool_indices,
+            seq_lens,
+            workspace=self._frozen_dynamic_top_p_workspace,
+        )
+        self._frozen_dynamic_top_p_capture_metadata = metadata
+        self._frozen_dynamic_top_p_capture_metadata_key = (
+            req_pool_indices.numel(),
+            req_pool_indices.data_ptr(),
+            seq_lens.data_ptr(),
+        )
+        return metadata
+
+    def _can_bypass_legacy_decode_planning(self) -> bool:
+        return (
+            self.use_frozen_dynamic_top_p
+            and self._frozen_dynamic_top_p_workspace is not None
+            and not self.layers_skip
+        )
     
     
     def capture_plan_graph(
@@ -420,6 +493,12 @@ class VortexFlashInferBackend(AttentionBackend):
         assert bs == num_tokens
         
         if forward_mode.is_decode_or_idle():
+            if self._can_bypass_legacy_decode_planning():
+                self._prepare_frozen_decode_metadata(req_pool_indices, seq_lens)
+                metadata = DecodeMetadata([])
+                self.decode_cuda_graph_metadata[bs] = metadata
+                self.forward_metadata = metadata
+                return
             decode_wrappers = [
                 BatchDecodeWithPagedKVCacheWrapper(
                         self.workspace_buffer,
@@ -453,6 +532,7 @@ class VortexFlashInferBackend(AttentionBackend):
                 req_indices=req_pool_indices,
                 ctx=self.ctx
             )
+            self._prepare_frozen_decode_metadata(req_pool_indices, seq_lens)
             
             decode_wrappers[0].plan(
                 indptr=self.ctx.metadata.dense_kv_indptr[:bs*self.num_kv_heads+1],
@@ -496,6 +576,11 @@ class VortexFlashInferBackend(AttentionBackend):
         seq_lens_cpu: Optional[torch.Tensor],
     ):
         assert forward_mode.is_decode_or_idle()
+
+        if self._can_bypass_legacy_decode_planning():
+            self._prepare_frozen_decode_metadata(req_pool_indices, seq_lens)
+            self.forward_metadata = self.decode_cuda_graph_metadata[bs]
+            return
         
         self.plan_decode(
                 cached_seq_lens=seq_lens.to(torch.int32),
@@ -503,6 +588,7 @@ class VortexFlashInferBackend(AttentionBackend):
                 req_indices=req_pool_indices,
                 ctx=self.ctx
             )
+        self._prepare_frozen_decode_metadata(req_pool_indices, seq_lens)
         
         self.decode_cuda_graph_metadata[bs][0].plan(
             indptr=self.ctx.metadata.dense_kv_indptr[:bs*self.num_kv_heads+1],
@@ -526,6 +612,40 @@ class VortexFlashInferBackend(AttentionBackend):
             page_size=self.block_size,
             q_data_type=self.q_data_type,
             kv_data_type=self.data_type,
+        )
+
+        self.forward_metadata = DecodeMetadata(self.decode_cuda_graph_metadata[bs])
+
+    def init_forward_metadata_out_graph(
+        self,
+        forward_batch: ForwardBatch,
+        in_capture: bool = False,
+    ):
+        """Bridge the SGLang 0.5.15 CUDA-graph metadata callback."""
+
+        if in_capture:
+            bs = len(forward_batch.req_pool_indices)
+            self.init_forward_metadata_capture_cuda_graph(
+                bs=bs,
+                num_tokens=bs,
+                req_pool_indices=forward_batch.req_pool_indices,
+                seq_lens=forward_batch.seq_lens,
+                encoder_lens=getattr(forward_batch, "encoder_lens", None),
+                forward_mode=forward_batch.forward_mode,
+                spec_info=getattr(forward_batch, "spec_info", None),
+            )
+            return
+
+        bs = len(forward_batch.req_pool_indices)
+        self.init_forward_metadata_replay_cuda_graph(
+            bs=bs,
+            req_pool_indices=forward_batch.req_pool_indices,
+            seq_lens=forward_batch.seq_lens,
+            seq_lens_sum=int(forward_batch.seq_lens.sum().item()),
+            encoder_lens=getattr(forward_batch, "encoder_lens", None),
+            forward_mode=forward_batch.forward_mode,
+            spec_info=getattr(forward_batch, "spec_info", None),
+            seq_lens_cpu=getattr(forward_batch, "seq_lens_cpu", None),
         )
 
     def get_cuda_graph_seq_len_fill_value(self):
@@ -651,7 +771,74 @@ class VortexFlashInferBackend(AttentionBackend):
         # Decide whether to use sparsity on this layer
         use_sparsity = (layer.layer_id not in self.layers_skip)
 
-        if use_sparsity:
+        if use_sparsity and self.use_frozen_dynamic_top_p:
+            if layer.logit_cap not in (None, 0.0):
+                raise RuntimeError(
+                    "frozen_dynamic_top_p does not yet implement logits_soft_cap"
+                )
+            expected_scale = self.head_dim ** -0.5
+            if abs(float(layer.scaling) - expected_scale) > 1e-8:
+                raise RuntimeError(
+                    "frozen_dynamic_top_p requires the standard 1/sqrt(D) scale"
+                )
+            from vortex_torch.engine.sgl.frozen_dynamic_top_p import (
+                build_decode_metadata,
+                frozen_select_and_attend,
+                resolve_layer_kv_scales,
+            )
+
+            metadata_key = (
+                forward_batch.req_pool_indices.numel(),
+                forward_batch.req_pool_indices.data_ptr(),
+                forward_batch.seq_lens.data_ptr(),
+            )
+            if metadata_key == self._frozen_dynamic_top_p_capture_metadata_key:
+                metadata = self._frozen_dynamic_top_p_capture_metadata
+            else:
+                metadata_attribute = "_frozen_dynamic_top_p_metadata"
+                if hasattr(forward_batch, metadata_attribute):
+                    metadata = getattr(forward_batch, metadata_attribute)
+                else:
+                    metadata = build_decode_metadata(
+                        self.req_to_token,
+                        forward_batch.req_pool_indices,
+                        forward_batch.seq_lens,
+                        workspace=self._frozen_dynamic_top_p_workspace,
+                    )
+                    setattr(forward_batch, metadata_attribute, metadata)
+
+            if metadata is None:
+                if not self.forward_metadata.decode_wrappers:
+                    raise RuntimeError(
+                        "frozen_dynamic_top_p cannot use dense fallback during "
+                        "an all-sparse captured decode"
+                    )
+                o = self.forward_metadata.decode_wrappers[0].forward(
+                    q.contiguous().view(-1, self.group_size, layer.head_dim),
+                    (cache_k, cache_v),
+                    sm_scale=layer.scaling,
+                    logits_soft_cap=layer.logit_cap,
+                    k_scale=k_scale,
+                    v_scale=v_scale,
+                )
+            else:
+                batch = len(forward_batch.req_pool_indices)
+                q_full = q.contiguous().view(
+                    batch, self.num_qo_heads, layer.head_dim
+                )
+                k_scale_float, v_scale_float = resolve_layer_kv_scales(layer)
+                o, self._frozen_dynamic_top_p_last = frozen_select_and_attend(
+                    q_full,
+                    cache,
+                    metadata,
+                    num_kv_heads=self.num_kv_heads,
+                    temperature=self.frozen_dynamic_top_p_temperature,
+                    k_scale=k_scale_float,
+                    v_scale=v_scale_float,
+                    workspace=self._frozen_dynamic_top_p_workspace,
+                )
+
+        elif use_sparsity:
             # Prepare Q in grouped shape expected by sparse path
             q = q.contiguous().view(-1, self.group_size, layer.head_dim)
 

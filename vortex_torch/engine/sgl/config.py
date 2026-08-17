@@ -121,6 +121,7 @@ class VortexConfig:
     module_name: Optional[str] = None
     block_size: int = 16
     topk_ratio: float = 0.0
+    frozen_temperature: Optional[float] = None
     compilation_cache_dir: Optional[str] = None
     schedule_policy: Optional[str] = None
     attention_backend: str = "flashinfer"

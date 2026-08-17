@@ -112,7 +112,7 @@ class VortexCachePool(KVCache):
         self.layer_transfer_counter = None
         self.device_module = torch.get_device_module(self.device)
         self.alt_stream = self.device_module.Stream() if _is_cuda else None
-        self.layers_skip = model_runner.server_args.vortex_layers_skip
+        self.layers_skip = model_runner.server_args.vortex_layers_skip or []
         cache_size = self.get_cache_size_bytes()
         
         logger.info(
@@ -127,6 +127,8 @@ class VortexCachePool(KVCache):
         
     def _compile(self, model_runner) -> None:
         """Trace the sparse-attention cache flow on zero-sized dummies and compile it."""
+        if getattr(self.sparse_attention, "is_frozen_dynamic_top_p", False):
+            return
         self.ctx.create(self, model_runner)
         self.ctx.profile()
 
@@ -276,12 +278,49 @@ class VortexCachePool(KVCache):
         return self.custom_mem_pool
 
     def get_cpu_copy(self, indices, mamba_indices=None):
-        
-        raise NotImplementedError
+        if not getattr(self.sparse_attention, "is_frozen_dynamic_top_p", False):
+            raise NotImplementedError
+        from vortex_torch.engine.sgl.frozen_dynamic_top_p import snapshot_layer_tokens
+
+        torch.cuda.synchronize()
+        layers = []
+        for cache in self.cache:
+            key, value = snapshot_layer_tokens(
+                cache,
+                indices,
+                num_kv_heads=self.head_num,
+                head_dim=self.head_dim,
+            )
+            layers.append((key.cpu(), value.cpu()))
+        torch.cuda.synchronize()
+        return {
+            "format": "frozen_dynamic_top_p_tokens_v1",
+            "num_tokens": int(indices.numel()),
+            "layers": layers,
+        }
 
     def load_cpu_copy(self, kv_cache_cpu, indices, mamba_indices=None):
-        
-        raise NotImplementedError
+        if not getattr(self.sparse_attention, "is_frozen_dynamic_top_p", False):
+            raise NotImplementedError
+        if (
+            not isinstance(kv_cache_cpu, dict)
+            or kv_cache_cpu.get("format") != "frozen_dynamic_top_p_tokens_v1"
+            or kv_cache_cpu.get("num_tokens") != indices.numel()
+            or len(kv_cache_cpu.get("layers", ())) != self.layer_num
+        ):
+            raise ValueError("invalid frozen Dynamic Top-P CPU cache snapshot")
+        from vortex_torch.engine.sgl.frozen_dynamic_top_p import restore_layer_tokens
+
+        for cache, (key, value) in zip(self.cache, kv_cache_cpu["layers"]):
+            restore_layer_tokens(
+                cache,
+                indices,
+                key,
+                value,
+                num_kv_heads=self.head_num,
+                head_dim=self.head_dim,
+            )
+        torch.cuda.synchronize()
 
     # Todo: different memory layout
     def get_flat_data(self, indices):
@@ -299,21 +338,25 @@ class VortexCachePool(KVCache):
         raise NotImplementedError
 
 
+    def _wait_for_layer_transfer(self, layer_id: int) -> None:
+        if self.layer_transfer_counter is not None:
+            self.layer_transfer_counter.wait_until(layer_id - self.start_layer)
+
     def get_key_buffer(self, layer_id: int):
-        
+        self._wait_for_layer_transfer(layer_id)
         return self.cache[layer_id - self.start_layer]["k"]
 
     def get_value_buffer(self, layer_id: int):
-        
+        self._wait_for_layer_transfer(layer_id)
         return self.cache[layer_id - self.start_layer]["v"]
 
     def get_kv_buffer(self, layer_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        
+        self._wait_for_layer_transfer(layer_id)
         return self.cache[layer_id - self.start_layer]["k"], self.cache[layer_id - self.start_layer]["v"]
 
         
     def get_cache(self, layer_id: int)->Dict[str, torch.Tensor]:
-        
+        self._wait_for_layer_transfer(layer_id)
         return self.cache[layer_id - self.start_layer]
 
         
@@ -361,11 +404,33 @@ class VortexCachePool(KVCache):
         )
         if layer_id in self.layers_skip:
             return
-        self.compiled_cache.forward(
-            self.cache[layer_id - self.start_layer], loc, ctx=self.ctx,
-            cur_layer=layer_id,
-        )
+        if getattr(self.sparse_attention, "is_frozen_dynamic_top_p", False):
+            from vortex_torch.engine.sgl.frozen_dynamic_top_p import (
+                finalize_newly_completed_blocks,
+            )
+
+            finalize_newly_completed_blocks(
+                self.cache[layer_id - self.start_layer],
+                loc,
+                num_kv_heads=self.head_num,
+                head_dim=self.head_dim,
+            )
+        else:
+            self.compiled_cache.forward(
+                self.cache[layer_id - self.start_layer], loc, ctx=self.ctx,
+                cur_layer=layer_id,
+            )
         
     def move_kv_cache(self, tgt_loc: torch.Tensor, src_loc: torch.Tensor):
-        
-        raise NotImplementedError
+        if not getattr(self.sparse_attention, "is_frozen_dynamic_top_p", False):
+            raise NotImplementedError
+        from vortex_torch.engine.sgl.frozen_dynamic_top_p import relocate_layer_cache
+
+        for cache in self.cache:
+            relocate_layer_cache(
+                cache,
+                tgt_loc,
+                src_loc,
+                num_kv_heads=self.head_num,
+                head_dim=self.head_dim,
+            )

@@ -402,11 +402,20 @@ class vFlow(ABC):
         total_bytes = 0
         # convert to a format that maps key -> ((r, c), dtype) for easier access during indexing and cache updates
         self.cache_meta_info = {}
-        for key, (r, c) in raw_cache_meta_info.items():
-            if key in ["k", "v"]:
-                dtype = self.kv_cache_dtype
+        for key, cache_spec in raw_cache_meta_info.items():
+            if (
+                len(cache_spec) == 2
+                and isinstance(cache_spec[0], tuple)
+                and isinstance(cache_spec[1], torch.dtype)
+            ):
+                (r, c), dtype = cache_spec
             else:
-                dtype = self.intermediate_dtype  # default dtype for auxiliary tensors; can be customized as needed
+                r, c = cache_spec
+                dtype = (
+                    self.kv_cache_dtype
+                    if key in ["k", "v"]
+                    else self.intermediate_dtype
+                )
             total_bytes += r * c * torch._utils._element_size(dtype)
             self.cache_meta_info[key] = ((r, c), dtype)
         

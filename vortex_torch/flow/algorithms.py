@@ -171,6 +171,31 @@ class GQABlockSparseAttention(vFlow):
         }
 
 
+@register("frozen_dynamic_top_p")
+class FrozenDynamicTopP(vFlow):
+    """Marker flow dispatched by the dedicated Dynamic Top-P runtime."""
+
+    is_frozen_dynamic_top_p = True
+
+    def forward_indexer(self, q, o, cache, ctx):
+        raise RuntimeError(
+            "frozen_dynamic_top_p must be dispatched by VortexFlashInferBackend"
+        )
+
+    def forward_cache(self, cache, loc, ctx):
+        raise RuntimeError(
+            "frozen_dynamic_top_p cache updates must be dispatched by VortexCachePool"
+        )
+
+    def create_cache(self, block_size: int, head_dim: int):
+        if block_size != 16:
+            raise ValueError("frozen_dynamic_top_p requires block_size=16")
+        return {
+            "centroids": ((4, head_dim), torch.bfloat16),
+            "centroid_counts": ((4, 1), torch.uint8),
+        }
+
+
 
 @register("gqa_quest_sparse_attention")
 class GQAQuestSparseAttention(vFlow):
