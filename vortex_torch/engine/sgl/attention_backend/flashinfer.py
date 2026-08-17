@@ -239,6 +239,7 @@ class VortexFlashInferBackend(AttentionBackend):
 
             self.frozen_dynamic_top_p_temperature = validate_frozen_runtime(
                 model_path=model_runner.model_config.model_path,
+                model_name=model_runner.server_args.vortex_frozen_model_name,
                 temperature=model_runner.server_args.vortex_frozen_temperature,
                 page_size=self.page_size,
                 block_size=self.block_size,

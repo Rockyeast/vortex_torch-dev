@@ -160,6 +160,7 @@ def _head_packed_view(tensor: torch.Tensor, num_kv_heads: int, *tail: int):
 def validate_frozen_runtime(
     *,
     model_path: str,
+    model_name: str | None,
     temperature: float | None,
     page_size: int,
     block_size: int,
@@ -167,7 +168,8 @@ def validate_frozen_runtime(
 ) -> float:
     """Fail closed if runtime flags would change the frozen formulation."""
 
-    normalized = model_path.lower()
+    policy_identity = model_name or model_path
+    normalized = policy_identity.lower()
     expected = next(
         (value for key, value in _TEMPERATURE_POLICIES.items() if key in normalized),
         None,
@@ -175,11 +177,11 @@ def validate_frozen_runtime(
     if expected is None:
         raise ValueError(
             "frozen_dynamic_top_p has no pre-calibrated temperature for "
-            f"model {model_path!r}"
+            f"model {policy_identity!r}"
         )
     if temperature is None or not math.isclose(temperature, expected, abs_tol=0.0):
         raise ValueError(
-            f"{model_path!r} requires the frozen temperature {expected}; "
+            f"{policy_identity!r} requires the frozen temperature {expected}; "
             f"received {temperature!r}"
         )
     if block_size != BLOCK_SIZE or page_size != BLOCK_SIZE:
@@ -687,4 +689,3 @@ def frozen_select_and_attend(
         "selected_counts": selected_counts,
     }
     return merged, diagnostics
-
