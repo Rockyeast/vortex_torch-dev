@@ -75,21 +75,30 @@ def frozen_nsa_selection(
         start = int(cu_seqlens[seq].item())
         end = int(cu_seqlens[seq + 1].item())
         length = end - start
+        if length < 1:
+            raise ValueError("packed sequences must contain at least one token")
         full_blocks = length // BLOCK_SIZE
-        if full_blocks < 1:
-            raise ValueError(
-                "frozen NSA path requires at least one full block per packed sequence"
+        # Packed micro-batches can contain a short final sequence.  Represent
+        # it as one zero-padded logical block for selector bookkeeping.  The
+        # NSA consumer still receives the original cu_seqlens, so its causal
+        # mask prevents both padded and future tokens from contributing.
+        selector_blocks = max(1, full_blocks)
+        block_tokens = k[0, start : start + full_blocks * BLOCK_SIZE]
+        if full_blocks == 0:
+            block_tokens = torch.nn.functional.pad(
+                k[0, start:end],
+                (0, 0, 0, 0, 0, BLOCK_SIZE - length),
             )
         blocks = (
-            k[0, start : start + full_blocks * BLOCK_SIZE]
-            .view(full_blocks, BLOCK_SIZE, kv_heads, head_dim)
+            block_tokens
+            .view(selector_blocks, BLOCK_SIZE, kv_heads, head_dim)
             .permute(0, 2, 1, 3)
             .contiguous()
         )
         centroids, counts = fps_r4_lloyd1(blocks)
         sequence_centroids.append(centroids)
         sequence_counts.append(counts)
-        sequence_full_blocks.append(full_blocks)
+        sequence_full_blocks.append(selector_blocks)
         ranges.append((start, end))
 
     centroid_cache = torch.cat(sequence_centroids, dim=0)
