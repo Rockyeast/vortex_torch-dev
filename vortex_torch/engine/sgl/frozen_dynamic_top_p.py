@@ -26,6 +26,8 @@ MAX_LOGICAL_BLOCKS = 4096
 _TEMPERATURE_POLICIES = {
     "qwen3-1.7b": 1.1,
     "qwen3-4b": 1.1,
+    "deepseek-r1-distill-qwen-1.5b": 1.1,
+    "r1distill-qwen-1.5b": 1.1,
     "phi-4-mini": 1.2,
 }
 

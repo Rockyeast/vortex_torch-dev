@@ -21,6 +21,11 @@ def validate_temperature(model_name: str, temperature: float | None) -> float:
     normalized = model_name.lower()
     if "qwen3-4b" in normalized or "qwen3-1.7b" in normalized:
         expected = 1.1
+    elif (
+        "deepseek-r1-distill-qwen-1.5b" in normalized
+        or "r1distill-qwen-1.5b" in normalized
+    ):
+        expected = 1.1
     elif "phi-4-mini" in normalized:
         expected = 1.2
     else:
