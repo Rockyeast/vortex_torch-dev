@@ -428,10 +428,14 @@ class VortexFlashInferBackend(AttentionBackend):
                 allocate_decode_workspace,
             )
 
-            max_blocks = max(
-                1,
-                (self.max_context_len + self.block_size - 1) // self.block_size,
-            )
+            # Context.create() already resolves the effective per-request
+            # capacity from vortex_max_seq_lens (falling back to the model
+            # context only when no Vortex limit is configured).  Reusing that
+            # value keeps CUDA-graph workspace sizing consistent with the
+            # request metadata buffers.  In particular, reasoning checkpoints
+            # may advertise a 128K model context while a run is intentionally
+            # capped at 32K.
+            max_blocks = self.ctx.max_num_blocks_per_request
             self._frozen_dynamic_top_p_workspace = allocate_decode_workspace(
                 max_batch=max_bs,
                 max_blocks=max_blocks,
