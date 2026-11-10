@@ -108,7 +108,10 @@ def frozen_nsa_selection(
 
     centroid_cache = torch.cat(sequence_centroids, dim=0)
     count_cache = torch.cat(sequence_counts, dim=0)
-    max_completed = max(sequence_full_blocks)
+    # Kernel widths are compile-time constants: round up so microbatches of
+    # different lengths share compiled variants. Rows beyond a sequence's own
+    # completed_counts are masked, so the selection does not change.
+    max_completed = -(-max(sequence_full_blocks) // 64) * 64
     logical_to_slot = torch.zeros(
         (tokens, max_completed), device=q.device, dtype=torch.int32
     )

@@ -30,10 +30,16 @@ def _fps_r4_lloyd1_kernel(
     HAS_SLOT_MAPPING: tl.constexpr,
     INPUT_USES_SLOT_MAPPING: tl.constexpr,
     HAS_VALID_MASK: tl.constexpr,
+    LOCATION_INPUT: tl.constexpr = False,
 ):
     stream = tl.program_id(0)
     logical_block = stream // NUM_KV_HEADS
     kv_head = stream % NUM_KV_HEADS
+    if LOCATION_INPUT:
+        # slot_ptr holds token locations: only a block's last token completes it
+        location = tl.load(slot_ptr + logical_block)
+        if location % 16 != 15:
+            return
     if HAS_VALID_MASK:
         valid = tl.load(valid_ptr + logical_block) != 0
         if not valid:
@@ -41,6 +47,8 @@ def _fps_r4_lloyd1_kernel(
     input_stream = stream
     if INPUT_USES_SLOT_MAPPING:
         input_slot = tl.load(slot_ptr + logical_block)
+        if LOCATION_INPUT:
+            input_slot = input_slot // 16
         input_stream = input_slot * NUM_KV_HEADS + kv_head
     token = tl.arange(0, 16)[:, None]
     dim = tl.arange(0, BLOCK_D)[None, :]
@@ -130,6 +138,8 @@ def _fps_r4_lloyd1_kernel(
     out_stream = stream
     if HAS_SLOT_MAPPING:
         slot = tl.load(slot_ptr + logical_block)
+        if LOCATION_INPUT:
+            slot = slot // 16
         out_stream = slot * NUM_KV_HEADS + kv_head
     out_dim = tl.arange(0, BLOCK_D)
     out_base = out_stream * 4 * HEAD_DIM
@@ -359,6 +369,43 @@ def fps_r4_lloyd1_scatter_from_cache(
         HAS_SLOT_MAPPING=True,
         INPUT_USES_SLOT_MAPPING=True,
         HAS_VALID_MASK=True,
+        num_warps=num_warps,
+    )
+
+
+def fps_r4_lloyd1_scatter_from_locations(
+    k_cache: torch.Tensor,
+    token_locations: torch.Tensor,
+    centroid_cache: torch.Tensor,
+    count_cache: torch.Tensor,
+    *,
+    num_warps: int = 4,
+) -> None:
+    """fps_r4_lloyd1_scatter_from_cache with slot and boundary mask derived inside the kernel from token locations."""
+
+    if k_cache.ndim != 4 or k_cache.shape[-2] != BLOCK_SIZE or not k_cache.is_contiguous():
+        raise ValueError("k_cache must be contiguous [S, Hkv, 16, D]")
+    slots, kv_heads, _, head_dim = k_cache.shape
+    if token_locations.ndim != 1 or token_locations.dtype not in (torch.int32, torch.int64) or not token_locations.is_contiguous():
+        raise ValueError("token_locations must be contiguous int32/int64 [M]")
+    if centroid_cache.shape != (slots, kv_heads, CLUSTERS, head_dim) or count_cache.shape != (slots, kv_heads, CLUSTERS):
+        raise ValueError("summary caches have incompatible shapes")
+    streams = token_locations.numel() * kv_heads
+    if streams == 0:
+        return
+    _fps_r4_lloyd1_kernel[(streams,)](
+        k_cache,
+        centroid_cache,
+        count_cache,
+        token_locations,
+        token_locations,
+        HEAD_DIM=head_dim,
+        BLOCK_D=triton.next_power_of_2(head_dim),
+        NUM_KV_HEADS=kv_heads,
+        HAS_SLOT_MAPPING=True,
+        INPUT_USES_SLOT_MAPPING=True,
+        HAS_VALID_MASK=False,
+        LOCATION_INPUT=True,
         num_warps=num_warps,
     )
 

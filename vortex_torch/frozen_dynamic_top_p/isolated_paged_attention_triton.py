@@ -13,7 +13,7 @@ def _attention_launch_config(device: torch.device) -> tuple[bool, int]:
     """Use the measured lower-register-pressure launch on Blackwell."""
 
     major, _ = torch.cuda.get_device_capability(device)
-    return (True, 1) if major >= 10 else (False, 4)
+    return (True, 1)  # local test: the sm_90 path fails for GROUP_SIZE=6 (non-pow2 arange)
 
 
 @triton.jit
@@ -683,3 +683,375 @@ def paged_gqa_decode_attention_with_tail_splitk(
     )
     return output, lse
 
+
+
+# ---- grouped split-K attention (2026-11-09): one program per KV head and split, all Q heads of the group together.
+# The per-Q-head kernel above reads every selected K/V block once per Q head (6 times for 12 Q / 2 KV heads).
+# Here each block is read once. Same indices, counts, tail handling and online softmax; only the schedule changes.
+@triton.jit
+def _paged_gqa_decode_split_group_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    slot_index_ptr,
+    selected_count_ptr,
+    tail_slot_ptr,
+    tail_count_ptr,
+    partial_output_ptr,
+    partial_lse_ptr,
+    NUM_Q_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    GROUP_P: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    INDEX_CAPACITY: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    SCALE: tl.constexpr,
+    K_SCALE: tl.constexpr,
+    V_SCALE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    split = tl.program_id(1)
+    batch = row // NUM_KV_HEADS
+    kv_head = row % NUM_KV_HEADS
+    selected_count = tl.load(selected_count_ptr + row).to(tl.int32)
+    ranks_per_split = tl.cdiv(selected_count, NUM_SPLITS)
+    first_rank = split * ranks_per_split
+    last_rank = tl.minimum(first_rank + ranks_per_split, selected_count)
+
+    group = tl.arange(0, GROUP_P)
+    valid_group = group < GROUP_SIZE
+    dim = tl.arange(0, BLOCK_D)
+    valid_dim = dim < HEAD_DIM
+    q_row = batch * NUM_Q_HEADS + kv_head * GROUP_SIZE + group
+    query_unscaled = tl.load(
+        q_ptr + q_row[:, None] * HEAD_DIM + dim[None, :],
+        mask=valid_group[:, None] & valid_dim[None, :],
+        other=0.0,
+    )
+    query = query_unscaled * SCALE
+    maximum = tl.full((GROUP_P,), -float("inf"), tl.float32)
+    denominator = tl.zeros((GROUP_P,), tl.float32)
+    accumulator = tl.zeros((GROUP_P, BLOCK_D), tl.float32)
+    token = tl.arange(0, BLOCK_SIZE)
+
+    for selected_rank in range(first_rank, last_rank):
+        slot = tl.load(
+            slot_index_ptr + row * INDEX_CAPACITY + selected_rank
+        ).to(tl.int64)
+        stream = slot * NUM_KV_HEADS + kv_head
+        cache_offset = (
+            stream * BLOCK_SIZE * HEAD_DIM
+            + token[:, None] * HEAD_DIM
+            + dim[None, :]
+        )
+        key = tl.load(k_ptr + cache_offset, mask=valid_dim[None, :], other=0.0).to(tl.float32) * K_SCALE
+        value = tl.load(v_ptr + cache_offset, mask=valid_dim[None, :], other=0.0).to(tl.float32) * V_SCALE
+        logits = tl.sum(query[:, None, :].to(tl.float32) * key[None, :, :], axis=2)
+        new_maximum = tl.maximum(maximum, tl.max(logits, axis=1))
+        correction = tl.exp(maximum - new_maximum)
+        probability = tl.exp(logits - new_maximum[:, None])
+        denominator = denominator * correction + tl.sum(probability, axis=1)
+        accumulator = accumulator * correction[:, None] + tl.sum(
+            probability[:, :, None] * value[None, :, :], axis=1
+        )
+        maximum = new_maximum
+
+    tail_count = tl.load(tail_count_ptr + batch).to(tl.int32)
+    include_tail = (split == 0) & (tail_count > 0)
+    tail_slot = tl.load(tail_slot_ptr + batch).to(tl.int64)
+    stream = tail_slot * NUM_KV_HEADS + kv_head
+    cache_offset = (
+        stream * BLOCK_SIZE * HEAD_DIM
+        + token[:, None] * HEAD_DIM
+        + dim[None, :]
+    )
+    valid_tail = include_tail & (token < tail_count)
+    key = tl.load(k_ptr + cache_offset, mask=valid_tail[:, None] & valid_dim[None, :], other=0.0).to(tl.float32) * K_SCALE
+    value = tl.load(v_ptr + cache_offset, mask=valid_tail[:, None] & valid_dim[None, :], other=0.0).to(tl.float32) * V_SCALE
+    logits = tl.sum(query_unscaled[:, None, :].to(tl.float32) * key[None, :, :], axis=2) * SCALE
+    logits = tl.where(valid_tail[None, :], logits, -float("inf"))
+    new_maximum = tl.maximum(maximum, tl.max(logits, axis=1))
+    correction = tl.exp(maximum - new_maximum)
+    probability = tl.exp(logits - new_maximum[:, None])
+    denominator = denominator * correction + tl.sum(probability, axis=1)
+    accumulator = accumulator * correction[:, None] + tl.sum(
+        probability[:, :, None] * value[None, :, :], axis=1
+    )
+    maximum = new_maximum
+
+    has_tokens = (first_rank < last_rank) | include_tail
+    safe_denominator = tl.where(has_tokens, denominator, 1.0)
+    normalized = tl.where(has_tokens, accumulator / safe_denominator[:, None], 0.0)
+    partial_lse = tl.where(has_tokens, maximum + tl.log(safe_denominator), -float("inf"))
+    partial_row = q_row * NUM_SPLITS + split
+    tl.store(
+        partial_output_ptr + partial_row[:, None] * HEAD_DIM + dim[None, :],
+        normalized,
+        mask=valid_group[:, None] & valid_dim[None, :],
+    )
+    tl.store(partial_lse_ptr + partial_row, partial_lse, mask=valid_group)
+
+
+def paged_gqa_decode_attention_with_tail_splitk_grouped(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    physical_block_indices: torch.Tensor,
+    block_counts: torch.Tensor,
+    tail_physical: torch.Tensor,
+    tail_counts: torch.Tensor,
+    *,
+    k_scale: float = 1.0,
+    v_scale: float = 1.0,
+    partial_output: torch.Tensor,
+    partial_lse: torch.Tensor,
+    output: torch.Tensor,
+    lse: torch.Tensor,
+    num_splits: int = 8,
+    num_warps: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Same contract as paged_gqa_decode_attention_with_tail_splitk; each K/V block is read once per KV head."""
+
+    batch, q_heads, head_dim = q.shape
+    _, kv_heads, block_size, _ = k_cache.shape
+    if partial_output.shape != (batch, q_heads, num_splits, head_dim) or partial_lse.shape != (batch, q_heads, num_splits):
+        raise ValueError("split-K scratch has the wrong shape")
+    block_d = triton.next_power_of_2(head_dim)
+    group_size = q_heads // kv_heads
+    _paged_gqa_decode_split_group_kernel[(batch * kv_heads, num_splits)](
+        q,
+        k_cache,
+        v_cache,
+        physical_block_indices,
+        block_counts,
+        tail_physical,
+        tail_counts,
+        partial_output,
+        partial_lse,
+        NUM_Q_HEADS=q_heads,
+        NUM_KV_HEADS=kv_heads,
+        GROUP_SIZE=group_size,
+        GROUP_P=triton.next_power_of_2(group_size),
+        HEAD_DIM=head_dim,
+        BLOCK_SIZE=block_size,
+        INDEX_CAPACITY=physical_block_indices.shape[2],
+        BLOCK_D=block_d,
+        NUM_SPLITS=num_splits,
+        SCALE=1.0 / math.sqrt(head_dim),
+        K_SCALE=k_scale,
+        V_SCALE=v_scale,
+        num_warps=num_warps,
+        num_stages=2,
+    )
+    _merge_paged_gqa_decode_split_states_kernel[(batch * q_heads,)](
+        partial_output,
+        partial_lse,
+        output,
+        lse,
+        HEAD_DIM=head_dim,
+        BLOCK_D=block_d,
+        NUM_SPLITS=num_splits,
+        num_warps=1,
+    )
+    return output, lse
+
+
+# ---- tensor-core split-K attention (2026-11-09): one program per KV head and split, TILE_BLOCKS selected blocks per
+# iteration, both products on tensor cores. Each K/V block is read once for the whole Q group instead of once per
+# Q head. Logits are exact BF16 products summed in FP32, as before. The probability-weighted value sum takes FP16
+# probabilities (11 significant bits), which is finer than the BF16 output it is rounded to.
+@triton.jit
+def _paged_gqa_decode_split_tc_kernel(
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    slot_index_ptr,
+    selected_count_ptr,
+    tail_slot_ptr,
+    tail_count_ptr,
+    partial_output_ptr,
+    partial_lse_ptr,
+    NUM_Q_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    INDEX_CAPACITY: tl.constexpr,
+    NUM_SPLITS: tl.constexpr,
+    TILE_BLOCKS: tl.constexpr,
+    SCALE: tl.constexpr,
+    K_SCALE: tl.constexpr,
+    V_SCALE: tl.constexpr,
+):
+    GROUP_P: tl.constexpr = 16
+    TILE_T: tl.constexpr = TILE_BLOCKS * BLOCK_SIZE
+    row = tl.program_id(0)
+    split = tl.program_id(1)
+    batch = row // NUM_KV_HEADS
+    kv_head = row % NUM_KV_HEADS
+    selected_count = tl.load(selected_count_ptr + row).to(tl.int32)
+    ranks_per_split = tl.cdiv(selected_count, NUM_SPLITS)
+    first_rank = split * ranks_per_split
+    last_rank = tl.minimum(first_rank + ranks_per_split, selected_count)
+
+    group = tl.arange(0, GROUP_P)
+    valid_group = group < GROUP_SIZE
+    dim = tl.arange(0, HEAD_DIM)
+    q_row = batch * NUM_Q_HEADS + kv_head * GROUP_SIZE + group
+    # [D, G]: the query group as columns
+    query_unscaled = tl.load(
+        q_ptr + q_row[None, :] * HEAD_DIM + dim[:, None],
+        mask=valid_group[None, :],
+        other=0.0,
+    )
+    query = query_unscaled * SCALE
+    maximum = tl.full((GROUP_P,), -float("inf"), tl.float32)
+    denominator = tl.zeros((GROUP_P,), tl.float32)
+    accumulator = tl.zeros((GROUP_P, HEAD_DIM), tl.float32)
+    tile_token = tl.arange(0, TILE_T)
+
+    for tile_rank in range(first_rank, last_rank, TILE_BLOCKS):
+        rank = tile_rank + tile_token // BLOCK_SIZE
+        valid_token = rank < last_rank
+        slot = tl.load(
+            slot_index_ptr + row * INDEX_CAPACITY + rank,
+            mask=valid_token,
+            other=0,
+        ).to(tl.int64)
+        token_base = (
+            (slot * NUM_KV_HEADS + kv_head) * BLOCK_SIZE + tile_token % BLOCK_SIZE
+        ) * HEAD_DIM
+        cache_offset = token_base[:, None] + dim[None, :]
+        key = tl.load(k_ptr + cache_offset, mask=valid_token[:, None], other=0.0)
+        value = tl.load(v_ptr + cache_offset, mask=valid_token[:, None], other=0.0)
+        logits = tl.dot(key, query, out_dtype=tl.float32) * K_SCALE
+        logits = tl.where(valid_token[:, None], logits, -float("inf"))
+        new_maximum = tl.maximum(maximum, tl.max(logits, axis=0))
+        correction = tl.exp(maximum - new_maximum)
+        probability = tl.exp(logits - new_maximum[None, :])
+        denominator = denominator * correction + tl.sum(probability, axis=0)
+        # FP16 keeps 11 bits of each probability; the remainder goes through a second product
+        value_half = value.to(tl.float32).to(tl.float16)
+        probability_high = probability.to(tl.float16)
+        probability_low = (probability - probability_high.to(tl.float32)).to(tl.float16)
+        weighted_value = (
+            tl.dot(tl.trans(probability_high), value_half, out_dtype=tl.float32)
+            + tl.dot(tl.trans(probability_low), value_half, out_dtype=tl.float32)
+        ) * V_SCALE
+        accumulator = accumulator * correction[:, None] + weighted_value
+        maximum = new_maximum
+
+    # the current partial block: mandatory and exact, in split zero only
+    token = tl.arange(0, BLOCK_SIZE)
+    tail_count = tl.load(tail_count_ptr + batch).to(tl.int32)
+    include_tail = (split == 0) & (tail_count > 0)
+    tail_slot = tl.load(tail_slot_ptr + batch).to(tl.int64)
+    token_base = ((tail_slot * NUM_KV_HEADS + kv_head) * BLOCK_SIZE + token) * HEAD_DIM
+    cache_offset = token_base[:, None] + dim[None, :]
+    valid_tail = include_tail & (token < tail_count)
+    key = tl.load(k_ptr + cache_offset, mask=valid_tail[:, None], other=0.0)
+    value = tl.load(v_ptr + cache_offset, mask=valid_tail[:, None], other=0.0)
+    logits = tl.dot(key, query_unscaled, out_dtype=tl.float32) * (SCALE * K_SCALE)
+    logits = tl.where(valid_tail[:, None], logits, -float("inf"))
+    new_maximum = tl.maximum(maximum, tl.max(logits, axis=0))
+    correction = tl.exp(maximum - new_maximum)
+    probability = tl.exp(logits - new_maximum[None, :])
+    denominator = denominator * correction + tl.sum(probability, axis=0)
+    value_half = value.to(tl.float32).to(tl.float16)
+    probability_high = probability.to(tl.float16)
+    probability_low = (probability - probability_high.to(tl.float32)).to(tl.float16)
+    weighted_value = (
+        tl.dot(tl.trans(probability_high), value_half, out_dtype=tl.float32)
+        + tl.dot(tl.trans(probability_low), value_half, out_dtype=tl.float32)
+    ) * V_SCALE
+    accumulator = accumulator * correction[:, None] + weighted_value
+    maximum = new_maximum
+
+    has_tokens = (first_rank < last_rank) | include_tail
+    safe_denominator = tl.where(has_tokens, denominator, 1.0)
+    normalized = tl.where(has_tokens, accumulator / safe_denominator[:, None], 0.0)
+    partial_lse = tl.where(has_tokens, maximum + tl.log(safe_denominator), -float("inf"))
+    partial_row = q_row * NUM_SPLITS + split
+    tl.store(
+        partial_output_ptr + partial_row[:, None] * HEAD_DIM + dim[None, :],
+        normalized,
+        mask=valid_group[:, None],
+    )
+    tl.store(partial_lse_ptr + partial_row, partial_lse, mask=valid_group)
+
+
+def tensorcore_attention_supported(q: torch.Tensor, k_cache: torch.Tensor, num_kv_heads: int) -> bool:
+    head_dim = q.shape[-1]
+    return (
+        q.dtype == torch.bfloat16
+        and k_cache.dtype == torch.bfloat16
+        and head_dim == triton.next_power_of_2(head_dim)
+        and q.shape[1] // num_kv_heads <= 16
+    )
+
+
+def paged_gqa_decode_attention_with_tail_splitk_tc(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    physical_block_indices: torch.Tensor,
+    block_counts: torch.Tensor,
+    tail_physical: torch.Tensor,
+    tail_counts: torch.Tensor,
+    *,
+    k_scale: float = 1.0,
+    v_scale: float = 1.0,
+    partial_output: torch.Tensor,
+    partial_lse: torch.Tensor,
+    output: torch.Tensor,
+    lse: torch.Tensor,
+    num_splits: int = 8,
+    tile_blocks: int = 4,
+    num_warps: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Same contract as paged_gqa_decode_attention_with_tail_splitk, BF16 Q/K/V and power-of-two head_dim only."""
+
+    batch, q_heads, head_dim = q.shape
+    _, kv_heads, block_size, _ = k_cache.shape
+    if not tensorcore_attention_supported(q, k_cache, kv_heads) or v_cache.dtype != k_cache.dtype:
+        raise ValueError("tensor-core split-K attention needs BF16 Q/K/V, power-of-two head_dim, group <= 16")
+    if partial_output.shape != (batch, q_heads, num_splits, head_dim) or partial_lse.shape != (batch, q_heads, num_splits):
+        raise ValueError("split-K scratch has the wrong shape")
+    _paged_gqa_decode_split_tc_kernel[(batch * kv_heads, num_splits)](
+        q,
+        k_cache,
+        v_cache,
+        physical_block_indices,
+        block_counts,
+        tail_physical,
+        tail_counts,
+        partial_output,
+        partial_lse,
+        NUM_Q_HEADS=q_heads,
+        NUM_KV_HEADS=kv_heads,
+        GROUP_SIZE=q_heads // kv_heads,
+        HEAD_DIM=head_dim,
+        BLOCK_SIZE=block_size,
+        INDEX_CAPACITY=physical_block_indices.shape[2],
+        NUM_SPLITS=num_splits,
+        TILE_BLOCKS=tile_blocks,
+        SCALE=1.0 / math.sqrt(head_dim),
+        K_SCALE=k_scale,
+        V_SCALE=v_scale,
+        num_warps=num_warps,
+        num_stages=2,
+    )
+    _merge_paged_gqa_decode_split_states_kernel[(batch * q_heads,)](
+        partial_output,
+        partial_lse,
+        output,
+        lse,
+        HEAD_DIM=head_dim,
+        BLOCK_D=head_dim,
+        NUM_SPLITS=num_splits,
+        num_warps=1,
+    )
+    return output, lse

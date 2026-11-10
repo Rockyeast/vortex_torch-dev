@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -124,6 +126,7 @@ def _centroid_per_q_logmass_tensorcore_kernel(
     BLOCK_M: tl.constexpr,
     SCALE: tl.constexpr,
     K_SCALE: tl.constexpr,
+    SKIP_EMPTY: tl.constexpr = True,
 ):
     """Tensor-core equivalent of four centroid dot reductions per block."""
 
@@ -133,6 +136,17 @@ def _centroid_per_q_logmass_tensorcore_kernel(
     kv_head = shared_row % NUM_KV_HEADS
     block = block_tile * BLOCK_N + tl.arange(0, BLOCK_N)
     block_count = tl.load(block_count_ptr + batch)
+    if SKIP_EMPTY and block_tile * BLOCK_N >= block_count:
+        # wholly past this sequence's length: nothing to read, mark the tile empty
+        empty_row = tl.arange(0, BLOCK_M)
+        tl.store(
+            per_q_ptr
+            + (batch * NUM_Q_HEADS + kv_head * GROUP_SIZE + empty_row)[:, None] * NUM_BLOCKS
+            + block[None, :],
+            tl.full((BLOCK_M, BLOCK_N), -float("inf"), tl.float32),
+            mask=(empty_row[:, None] < GROUP_SIZE) & (block[None, :] < NUM_BLOCKS),
+        )
+        return
     valid_block = (block < NUM_BLOCKS) & (block < block_count)
     slot = tl.load(
         slot_ptr + batch * NUM_BLOCKS + block,
@@ -412,13 +426,13 @@ def centroid_per_q_logmass(
     block_d = triton.next_power_of_2(head_dim)
     device_major, _ = torch.cuda.get_device_capability(q.device)
     use_tensorcore = (
-        device_major >= 10
+        device_major >= int(os.environ.get("VORTEX_FAST_MIN_MAJOR", "10"))
         and q.dtype in (torch.bfloat16, torch.float16)
         and centroid_cache.dtype == q.dtype
         and group_size <= 16
     )
     if use_tensorcore:
-        block_n_score = 16
+        block_n_score = int(os.environ.get("VORTEX_SCORE_BLOCK_N", "0")) or (32 if batch >= 32 else 16)
         # On Blackwell, wider GQA groups already provide enough independent
         # tensor-core work per program; a single software-pipeline stage avoids
         # extra register pressure.  This changes launch scheduling only.
@@ -442,7 +456,8 @@ def centroid_per_q_logmass(
             BLOCK_M=16,
             SCALE=1.0 / math.sqrt(head_dim),
             K_SCALE=k_scale,
-            num_warps=4,
+            SKIP_EMPTY=os.environ.get("VORTEX_SCORE_SKIP_EMPTY", "1") == "1",
+            num_warps=int(os.environ.get("VORTEX_SCORE_WARPS", "4")),
             num_stages=tensorcore_stages,
         )
     else:

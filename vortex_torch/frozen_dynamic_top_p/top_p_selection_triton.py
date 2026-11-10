@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import math
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -54,6 +56,7 @@ def _dynamic_top_p_kernel(
     INV_TEMPERATURE: tl.constexpr,
     TOP_P: tl.constexpr,
     CAP_FRACTION: tl.constexpr,
+    FIXED_K: tl.constexpr = 0,
 ):
     row = tl.program_id(0)
     batch = row // NUM_HEADS
@@ -104,6 +107,9 @@ def _dynamic_top_p_kernel(
     )
     requested_candidates = tl.sum(nucleus.to(tl.int32), axis=0)
     candidate_count = tl.sum((valid & ~mandatory).to(tl.int32), axis=0)
+    if FIXED_K > 0:
+        # local test mode: same scores/order, keep a fixed total of FIXED_K blocks
+        requested_candidates = tl.maximum(FIXED_K - forced_count, 0)
     requested_candidates = tl.minimum(requested_candidates, candidate_count)
     # CAPACITY is the padded output width.  The semantic safety cap is
     # per-request, so shorter rows in a mixed-length batch must not inherit
@@ -212,6 +218,7 @@ def _normalized_gqa_dynamic_top_p_kernel(
     INV_TEMPERATURE: tl.constexpr,
     TOP_P: tl.constexpr,
     CAP_FRACTION: tl.constexpr,
+    FIXED_K: tl.constexpr = 0,
 ):
     """Fuse frozen per-Q normalization/GQA mean with stable Top-P."""
 
@@ -277,6 +284,9 @@ def _normalized_gqa_dynamic_top_p_kernel(
     )
     requested_candidates = tl.sum(nucleus.to(tl.int32), axis=0)
     candidate_count = tl.sum((valid & ~mandatory).to(tl.int32), axis=0)
+    if FIXED_K > 0:
+        # local test mode: same scores/order, keep a fixed total of FIXED_K blocks
+        requested_candidates = tl.maximum(FIXED_K - forced_count, 0)
     requested_candidates = tl.minimum(requested_candidates, candidate_count)
     row_capacity = tl.ceil(block_count.to(tl.float32) * CAP_FRACTION).to(tl.int32)
     row_capacity = tl.maximum(2, tl.minimum(row_capacity, CAPACITY))
@@ -361,6 +371,202 @@ def _normalized_gqa_dynamic_top_p_kernel(
     tl.store(count_out_ptr + row, requested_count)
 
 
+@triton.jit
+def _normalized_gqa_rows(
+    per_q_ptr, slot_ptr, score_out_ptr, logical_out_ptr, physical_out_ptr, count_out_ptr, row, batch, kv_head, block_count,
+    NUM_Q_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    NUM_BLOCKS: tl.constexpr,
+    CAPACITY: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    INV_TEMPERATURE: tl.constexpr,
+    TOP_P: tl.constexpr,
+    CAP_FRACTION: tl.constexpr,
+    FIXED_K: tl.constexpr,
+):
+    """One row of the fused selector, sorted at width BLOCK_N (BLOCK_N >= block_count)."""
+
+    offset = tl.arange(0, BLOCK_N)
+    has_any = block_count > 0
+    valid = (offset < NUM_BLOCKS) & (offset < block_count)
+
+    shared_probability = tl.zeros((BLOCK_N,), tl.float32)
+    for group in tl.static_range(0, GROUP_SIZE):
+        q_head = kv_head * GROUP_SIZE + group
+        q_row = batch * NUM_Q_HEADS + q_head
+        logmass = tl.load(
+            per_q_ptr + q_row * NUM_BLOCKS + offset,
+            mask=valid,
+            other=-float("inf"),
+        ).to(tl.float32)
+        maximum = tl.max(logmass, axis=0)
+        unnormalized = tl.where(valid, tl.exp(logmass - maximum), 0.0)
+        denominator = tl.maximum(tl.sum(unnormalized, axis=0), 1e-20)
+        shared_probability += unnormalized / denominator
+    shared_probability *= 1.0 / GROUP_SIZE
+    score = tl.log(shared_probability)
+    score = tl.where(valid, score, -float("inf"))
+    tl.store(
+        score_out_ptr + row * NUM_BLOCKS + offset,
+        score,
+        mask=offset < NUM_BLOCKS,
+    )
+    for start in range(BLOCK_N, NUM_BLOCKS, BLOCK_N):
+        tl.store(
+            score_out_ptr + row * NUM_BLOCKS + start + offset,
+            tl.full((BLOCK_N,), -float("inf"), tl.float32),
+            mask=start + offset < NUM_BLOCKS,
+        )
+
+    scaled = score * INV_TEMPERATURE
+    maximum = tl.max(scaled, axis=0)
+    unnormalized = tl.where(valid, tl.exp(scaled - maximum), 0.0)
+    denominator = tl.maximum(tl.sum(unnormalized, axis=0), 1e-20)
+    probability = unnormalized / denominator
+
+    last = tl.maximum(block_count - 1, 0)
+    mandatory = valid & ((offset == 0) | (offset == last))
+    forced_count = tl.sum(mandatory.to(tl.int32), axis=0)
+    forced_mass = tl.sum(tl.where(mandatory, probability, 0.0), axis=0)
+
+    candidate_probability = tl.where(valid & ~mandatory, probability, -1.0)
+    candidate_score = tl.where(valid & ~mandatory, scaled, -float("inf"))
+    candidate_key = _ordered_float_key(candidate_score, offset)
+    sorted_candidate_key = tl.sort(candidate_key, dim=0, descending=True)
+    sorted_candidate_index = _decode_stable_index(sorted_candidate_key)
+    sorted_candidate_probability = tl.gather(
+        candidate_probability, sorted_candidate_index, axis=0
+    )
+    sorted_candidate_probability = tl.maximum(sorted_candidate_probability, 0.0)
+    cumulative_before = (
+        tl.cumsum(sorted_candidate_probability, axis=0)
+        - sorted_candidate_probability
+    )
+    remaining_mass = tl.maximum(TOP_P - forced_mass, 0.0)
+    nucleus = (
+        (cumulative_before < remaining_mass)
+        & (sorted_candidate_probability > 0.0)
+        & (offset < NUM_BLOCKS)
+    )
+    requested_candidates = tl.sum(nucleus.to(tl.int32), axis=0)
+    candidate_count = tl.sum((valid & ~mandatory).to(tl.int32), axis=0)
+    if FIXED_K > 0:
+        # local test mode: same scores/order, keep a fixed total of FIXED_K blocks
+        requested_candidates = tl.maximum(FIXED_K - forced_count, 0)
+    requested_candidates = tl.minimum(requested_candidates, candidate_count)
+    row_capacity = tl.ceil(block_count.to(tl.float32) * CAP_FRACTION).to(tl.int32)
+    row_capacity = tl.maximum(2, tl.minimum(row_capacity, CAPACITY))
+    requested_candidates = tl.minimum(
+        requested_candidates, row_capacity - forced_count
+    )
+    requested_count = forced_count + requested_candidates
+
+    for start in range(0, CAPACITY, BLOCK_N):
+        output_rank = start + offset
+        within_capacity = output_rank < CAPACITY
+        tl.store(logical_out_ptr + row * CAPACITY + output_rank, -1, mask=within_capacity)
+        tl.store(physical_out_ptr + row * CAPACITY + output_rank, -1, mask=within_capacity)
+
+    first_index = tl.arange(0, 1)
+    last_index = last + tl.arange(0, 1)
+    first_score = tl.gather(scaled, first_index, axis=0)
+    last_score = tl.gather(scaled, last_index, axis=0)
+    first_key = _ordered_float_key(first_score, first_index)
+    last_key = _ordered_float_key(last_score, last_index)
+    has_distinct_last = has_any & (last != 0)
+
+    candidate_output_valid = offset < requested_candidates
+    mandatory_before_candidate = (first_key > sorted_candidate_key).to(tl.int32)
+    mandatory_before_candidate += (
+        has_distinct_last & (last_key > sorted_candidate_key)
+    ).to(tl.int32)
+    candidate_output_rank = offset + mandatory_before_candidate
+    candidate_physical = tl.load(
+        slot_ptr + batch * NUM_BLOCKS + sorted_candidate_index,
+        mask=candidate_output_valid,
+        other=-1,
+    ).to(tl.int32)
+    tl.store(
+        logical_out_ptr + row * CAPACITY + candidate_output_rank,
+        sorted_candidate_index,
+        mask=candidate_output_valid,
+    )
+    tl.store(
+        physical_out_ptr + row * CAPACITY + candidate_output_rank,
+        candidate_physical,
+        mask=candidate_output_valid,
+    )
+
+    first_output_rank = tl.sum(
+        (candidate_output_valid & (sorted_candidate_key > first_key)).to(tl.int32),
+        axis=0,
+    ) + (has_distinct_last & (last_key > first_key)).to(tl.int32)
+    last_output_rank = tl.sum(
+        (candidate_output_valid & (sorted_candidate_key > last_key)).to(tl.int32),
+        axis=0,
+    ) + (first_key > last_key).to(tl.int32)
+    first_physical = tl.load(slot_ptr + batch * NUM_BLOCKS).to(tl.int32)
+    last_physical = tl.load(slot_ptr + batch * NUM_BLOCKS + last).to(tl.int32)
+    tl.store(
+        logical_out_ptr + row * CAPACITY + first_output_rank,
+        0,
+        mask=has_any,
+    )
+    tl.store(
+        physical_out_ptr + row * CAPACITY + first_output_rank,
+        first_physical,
+        mask=has_any,
+    )
+    tl.store(
+        logical_out_ptr + row * CAPACITY + last_output_rank,
+        last,
+        mask=has_distinct_last,
+    )
+    tl.store(
+        physical_out_ptr + row * CAPACITY + last_output_rank,
+        last_physical,
+        mask=has_distinct_last,
+    )
+    tl.store(count_out_ptr + row, requested_count)
+
+
+@triton.jit
+def _normalized_gqa_bucketed_kernel(
+    per_q_ptr,
+    slot_ptr,
+    block_count_ptr,
+    score_out_ptr,
+    logical_out_ptr,
+    physical_out_ptr,
+    count_out_ptr,
+    NUM_Q_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    NUM_BLOCKS: tl.constexpr,
+    CAPACITY: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    INV_TEMPERATURE: tl.constexpr,
+    TOP_P: tl.constexpr,
+    CAP_FRACTION: tl.constexpr,
+    FIXED_K: tl.constexpr = 0,
+):
+    """The graph fixes the launch at the workspace width; pick the sort width from this row's real length."""
+
+    row = tl.program_id(0)
+    batch = row // NUM_KV_HEADS
+    kv_head = row % NUM_KV_HEADS
+    block_count = tl.load(block_count_ptr + batch).to(tl.int32)
+    if block_count <= 256:
+        _normalized_gqa_rows(per_q_ptr, slot_ptr, score_out_ptr, logical_out_ptr, physical_out_ptr, count_out_ptr, row, batch, kv_head, block_count, NUM_Q_HEADS, NUM_KV_HEADS, GROUP_SIZE, NUM_BLOCKS, CAPACITY, 256, INV_TEMPERATURE, TOP_P, CAP_FRACTION, FIXED_K)
+    elif block_count <= 512:
+        _normalized_gqa_rows(per_q_ptr, slot_ptr, score_out_ptr, logical_out_ptr, physical_out_ptr, count_out_ptr, row, batch, kv_head, block_count, NUM_Q_HEADS, NUM_KV_HEADS, GROUP_SIZE, NUM_BLOCKS, CAPACITY, 512, INV_TEMPERATURE, TOP_P, CAP_FRACTION, FIXED_K)
+    elif block_count <= 1024:
+        _normalized_gqa_rows(per_q_ptr, slot_ptr, score_out_ptr, logical_out_ptr, physical_out_ptr, count_out_ptr, row, batch, kv_head, block_count, NUM_Q_HEADS, NUM_KV_HEADS, GROUP_SIZE, NUM_BLOCKS, CAPACITY, 1024, INV_TEMPERATURE, TOP_P, CAP_FRACTION, FIXED_K)
+    else:
+        _normalized_gqa_rows(per_q_ptr, slot_ptr, score_out_ptr, logical_out_ptr, physical_out_ptr, count_out_ptr, row, batch, kv_head, block_count, NUM_Q_HEADS, NUM_KV_HEADS, GROUP_SIZE, NUM_BLOCKS, CAPACITY, BLOCK_N, INV_TEMPERATURE, TOP_P, CAP_FRACTION, FIXED_K)
+
+
 def top_p_capacity(num_blocks: int, cap_fraction: float = 0.75) -> int:
     if num_blocks <= 0:
         raise ValueError("num_blocks must be positive")
@@ -377,6 +583,7 @@ def dynamic_top_p_select_gpu(
     temperature: float = 1.1,
     top_p: float = 0.9,
     cap_fraction: float = 0.75,
+    fixed_k: int = 0,
     logical_out: torch.Tensor | None = None,
     physical_out: torch.Tensor | None = None,
     count_out: torch.Tensor | None = None,
@@ -463,6 +670,7 @@ def dynamic_top_p_select_gpu(
         INV_TEMPERATURE=1.0 / temperature,
         TOP_P=top_p,
         CAP_FRACTION=cap_fraction,
+        FIXED_K=int(fixed_k),
         num_warps=8 if block_n >= 1024 else 4,
     )
     return logical_out, physical_out, count_out
@@ -477,6 +685,7 @@ def normalized_gqa_dynamic_top_p_select_gpu(
     temperature: float = 1.1,
     top_p: float = 0.9,
     cap_fraction: float = 0.75,
+    fixed_k: int = 0,
     score_out: torch.Tensor,
     logical_out: torch.Tensor,
     physical_out: torch.Tensor,
@@ -543,7 +752,89 @@ def normalized_gqa_dynamic_top_p_select_gpu(
         INV_TEMPERATURE=1.0 / temperature,
         TOP_P=top_p,
         CAP_FRACTION=cap_fraction,
+        FIXED_K=int(fixed_k),
         num_warps=8 if block_n >= 1024 else 4,
     )
     return score_out, logical_out, physical_out, count_out
 
+
+def normalized_gqa_select_bucketed(
+    per_q_logmass: torch.Tensor,
+    logical_to_slot: torch.Tensor,
+    block_counts: torch.Tensor,
+    *,
+    num_kv_heads: int,
+    temperature: float = 1.1,
+    top_p: float = 0.9,
+    cap_fraction: float = 0.75,
+    fixed_k: int = 0,
+    score_out: torch.Tensor,
+    logical_out: torch.Tensor,
+    physical_out: torch.Tensor,
+    count_out: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fuse frozen per-Q normalization/GQA aggregation and Top-P selection."""
+
+    tensors = (
+        per_q_logmass,
+        logical_to_slot,
+        block_counts,
+        score_out,
+        logical_out,
+        physical_out,
+        count_out,
+    )
+    if not all(tensor.is_cuda and tensor.is_contiguous() for tensor in tensors):
+        raise ValueError("all fused normalization/Top-P tensors must be contiguous CUDA")
+    if per_q_logmass.ndim != 3 or per_q_logmass.dtype != torch.float32:
+        raise ValueError("per_q_logmass must be FP32 [B,Hq,N]")
+    batch, q_heads, num_blocks = per_q_logmass.shape
+    if num_kv_heads <= 0 or q_heads % num_kv_heads:
+        raise ValueError("Q heads must be divisible by num_kv_heads")
+    if logical_to_slot.shape != (batch, num_blocks):
+        raise ValueError("logical_to_slot must be [B,N]")
+    if block_counts.shape != (batch,):
+        raise ValueError("block_counts must be [B]")
+    integer_types = (torch.int32, torch.int64)
+    if logical_to_slot.dtype not in integer_types or block_counts.dtype not in integer_types:
+        raise ValueError("mapping/counts must use int32/int64")
+    if not 1 <= num_blocks <= 4096:
+        raise ValueError("fused normalization/Top-P supports 1..4096 blocks")
+    if not 0.0 < temperature or not 0.0 < top_p <= 1.0:
+        raise ValueError("invalid frozen temperature/Top-P")
+
+    capacity = top_p_capacity(num_blocks, cap_fraction)
+    if score_out.shape != (batch, num_kv_heads, num_blocks) or score_out.dtype != torch.float32:
+        raise ValueError("score_out must be FP32 [B,Hkv,N]")
+    output_shape = (batch, num_kv_heads, capacity)
+    for name, tensor in (
+        ("logical_out", logical_out),
+        ("physical_out", physical_out),
+    ):
+        if tensor.shape != output_shape or tensor.dtype != torch.int32:
+            raise ValueError(f"{name} has incompatible shape/dtype")
+    if count_out.shape != (batch, num_kv_heads) or count_out.dtype != torch.int32:
+        raise ValueError("count_out must be int32 [B,Hkv]")
+
+    block_n = triton.next_power_of_2(num_blocks)
+    _normalized_gqa_bucketed_kernel[(batch * num_kv_heads,)](
+        per_q_logmass,
+        logical_to_slot,
+        block_counts,
+        score_out,
+        logical_out,
+        physical_out,
+        count_out,
+        NUM_Q_HEADS=q_heads,
+        NUM_KV_HEADS=num_kv_heads,
+        GROUP_SIZE=q_heads // num_kv_heads,
+        NUM_BLOCKS=num_blocks,
+        CAPACITY=capacity,
+        BLOCK_N=block_n,
+        INV_TEMPERATURE=1.0 / temperature,
+        TOP_P=top_p,
+        CAP_FRACTION=cap_fraction,
+        FIXED_K=int(fixed_k),
+        num_warps=int(os.environ.get("VORTEX_SELECT_WARPS", "0")) or (16 if block_n >= 2048 else 8 if block_n >= 1024 else 4),
+    )
+    return score_out, logical_out, physical_out, count_out

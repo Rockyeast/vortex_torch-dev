@@ -13,14 +13,23 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import os
+
 import torch
 
 
 BLOCK_SIZE = 16
 CLUSTERS = 4
-TOP_P = 0.9
+# local test overrides (default = the frozen 0.9 Top-P policy)
+TOP_P = float(os.environ.get("VORTEX_TEST_TOP_P", "0.9"))
+FIXED_K = int(os.environ.get("VORTEX_TEST_FIXED_K", "0"))
 CAP_FRACTION = 0.75
 BLACKWELL_ATTENTION_SPLITS = 8
+TC_ATTENTION = os.environ.get("VORTEX_TC_ATTENTION", "1") == "1"
+FOLD_FINALIZE = os.environ.get("VORTEX_FOLD_FINALIZE", "1") == "1"
+TC_SMALL_BATCH_SPLITS = 32
+# local test: lowest compute capability that takes the tensor-core/fused/split-K path
+FAST_MIN_MAJOR = int(os.environ.get("VORTEX_FAST_MIN_MAJOR", "10"))
 MAX_LOGICAL_BLOCKS = 4096
 
 _TEMPERATURE_POLICIES = {
@@ -331,6 +340,20 @@ def finalize_newly_completed_blocks(
 ) -> None:
     """Build FPS-R4 + one-Lloyd summaries exactly at block boundaries."""
 
+    if FOLD_FINALIZE and token_locations.ndim == 1 and token_locations.is_contiguous():
+        if token_locations.numel() == 0:
+            return
+        from vortex_torch.frozen_dynamic_top_p.fps_centroid_triton import (
+            fps_r4_lloyd1_scatter_from_locations,
+        )
+
+        fps_r4_lloyd1_scatter_from_locations(
+            _head_packed_view(cache["k"], num_kv_heads, BLOCK_SIZE, head_dim),
+            token_locations,
+            _head_packed_view(cache["centroids"], num_kv_heads, CLUSTERS, head_dim),
+            _head_packed_view(cache["centroid_counts"], num_kv_heads, CLUSTERS),
+        )
+        return
     completed_mask = token_locations.remainder(BLOCK_SIZE) == BLOCK_SIZE - 1
     completed_slots = torch.div(
         token_locations, BLOCK_SIZE, rounding_mode="floor"
@@ -557,10 +580,12 @@ def frozen_select_and_attend(
     from vortex_torch.frozen_dynamic_top_p.isolated_paged_attention_triton import (
         paged_gqa_decode_attention_with_tail,
         paged_gqa_decode_attention_with_tail_splitk,
+        paged_gqa_decode_attention_with_tail_splitk_tc,
+        tensorcore_attention_supported,
     )
     from vortex_torch.frozen_dynamic_top_p.top_p_selection_triton import (
         dynamic_top_p_select_gpu,
-        normalized_gqa_dynamic_top_p_select_gpu,
+        normalized_gqa_select_bucketed as normalized_gqa_dynamic_top_p_select_gpu,
     )
 
     batch, q_heads, head_dim = q.shape
@@ -603,7 +628,7 @@ def frozen_select_and_attend(
         split_partial_output = split_partial_lse = None
 
     device_major, _ = torch.cuda.get_device_capability(q.device)
-    if device_major >= 10 and workspace is not None:
+    if device_major >= FAST_MIN_MAJOR and workspace is not None:
         per_q_scores = centroid_per_q_logmass(
             q,
             centroids,
@@ -626,6 +651,7 @@ def frozen_select_and_attend(
             temperature=temperature,
             top_p=TOP_P,
             cap_fraction=CAP_FRACTION,
+            fixed_k=FIXED_K,
             score_out=score_out,
             logical_out=logical_out,
             physical_out=physical_out,
@@ -649,11 +675,46 @@ def frozen_select_and_attend(
             temperature=temperature,
             top_p=TOP_P,
             cap_fraction=CAP_FRACTION,
+            fixed_k=FIXED_K,
             logical_out=logical_out,
             physical_out=physical_out,
             count_out=count_out,
         )
-    if device_major >= 10 and workspace is not None:
+    if (
+        device_major >= FAST_MIN_MAJOR
+        and workspace is not None
+        and TC_ATTENTION
+        and tensorcore_attention_supported(q, k_cache, num_kv_heads)
+    ):
+        # each selected K/V block is read once per KV head, both products on tensor cores
+        tc_splits = BLACKWELL_ATTENTION_SPLITS
+        tc_partial_output, tc_partial_lse = split_partial_output, split_partial_lse
+        if batch <= 4 and workspace.max_batch * BLACKWELL_ATTENTION_SPLITS >= batch * TC_SMALL_BATCH_SPLITS:
+            tc_splits = TC_SMALL_BATCH_SPLITS
+            tc_partial_output = workspace.split_partial_output.view(-1)[
+                : batch * q_heads * tc_splits * head_dim
+            ].view(batch, q_heads, tc_splits, head_dim)
+            tc_partial_lse = workspace.split_partial_lse.view(-1)[
+                : batch * q_heads * tc_splits
+            ].view(batch, q_heads, tc_splits)
+        merged, _ = paged_gqa_decode_attention_with_tail_splitk_tc(
+            q,
+            k_cache,
+            v_cache,
+            physical_indices,
+            selected_counts,
+            metadata.tail_physical,
+            metadata.tail_counts,
+            k_scale=k_scale,
+            v_scale=v_scale,
+            partial_output=tc_partial_output,
+            partial_lse=tc_partial_lse,
+            output=merged_out,
+            lse=selected_lse_out,
+            num_splits=tc_splits,
+            tile_blocks=4 if batch <= 16 else 2,
+        )
+    elif device_major >= FAST_MIN_MAJOR and workspace is not None:
         merged, _ = paged_gqa_decode_attention_with_tail_splitk(
             q,
             k_cache,
